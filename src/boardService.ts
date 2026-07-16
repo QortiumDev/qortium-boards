@@ -22,6 +22,12 @@ import {
   type TopicRecord,
 } from './boardModel';
 import { qdnRequest } from './qdnRequest';
+import {
+  qdnResourceTarget,
+  transactionTarget,
+  type QdnResourceConfirmationTarget,
+  type TransactionConfirmationTarget,
+} from './pendingWrite';
 import type {
   PollActionResult,
   PublishActionResult,
@@ -447,6 +453,30 @@ export async function publishRecord(
   });
 }
 
+export function recordConfirmationTarget(
+  name: string,
+  record: BoardRecord,
+): QdnResourceConfirmationTarget {
+  return {
+    identifier: buildIdentifier(record.kind, record.id, 'targetId' in record ? record.targetId : undefined),
+    name,
+    service: BOARD_SERVICE,
+    type: 'qdn-resource',
+  };
+}
+
+export function publishedResourceConfirmationTarget(
+  result: PublishActionResult,
+): QdnResourceConfirmationTarget | null {
+  return qdnResourceTarget(result);
+}
+
+export function transactionConfirmationTarget(
+  result: PollActionResult | SendCoinResult,
+): TransactionConfirmationTarget | null {
+  return transactionTarget(result);
+}
+
 export function createTopic(title: string, description: string, tags: string[]): TopicRecord {
   return {
     createdAt: Date.now(),
@@ -554,9 +584,15 @@ export function createModeration(
   };
 }
 
-export async function selectAndPublishAttachment(
+export type PublishedAttachment = {
+  attachment: AttachmentReference;
+  confirmationTarget: QdnResourceConfirmationTarget;
+  publishResult: PublishActionResult;
+};
+
+export async function selectAndPublishAttachmentWithResult(
   name: string,
-): Promise<AttachmentReference | null> {
+): Promise<PublishedAttachment | null> {
   const selected = await qdnRequest<SourceSelectionResult>({
     action: 'SELECT_QDN_PUBLISH_SOURCE',
     kind: 'file',
@@ -568,7 +604,7 @@ export async function selectAndPublishAttachment(
 
   const id = createBoardId();
   const identifier = `qboards.v1.a.${id}`;
-  await qdnRequest<PublishActionResult>({
+  const publishResult = await qdnRequest<PublishActionResult>({
     action: 'PUBLISH_QDN_RESOURCE',
     identifier,
     name,
@@ -577,13 +613,32 @@ export async function selectAndPublishAttachment(
     title: selected.fileName.slice(0, 80),
   });
 
-  return {
+  const attachment: AttachmentReference = {
     filename: selected.fileName,
     identifier,
     name,
     service: 'ATTACHMENT',
     size: selected.size,
   };
+
+  return {
+    attachment,
+    confirmationTarget: {
+      identifier,
+      name,
+      service: 'ATTACHMENT',
+      type: 'qdn-resource',
+    },
+    publishResult,
+  };
+}
+
+export async function selectAndPublishAttachment(
+  name: string,
+): Promise<AttachmentReference | null> {
+  const published = await selectAndPublishAttachmentWithResult(name);
+
+  return published?.attachment ?? null;
 }
 
 export function createPollName(threadId: string) {
@@ -653,21 +708,23 @@ export function voteNativePoll(pollId: number, optionIndexes: number[]) {
   });
 }
 
-export async function sendTip(input: {
+export type SendTipInput = {
   amount: string;
   name: string;
   recipientAddress: string;
   recipientName?: string;
   targetId: string;
   targetKind: TipRecord['targetKind'];
-}) {
-  const result = await qdnRequest<SendCoinResult>({
+};
+
+export async function sendTipPayment(input: SendTipInput) {
+  const paymentResult = await qdnRequest<SendCoinResult>({
     action: 'SEND_COIN',
     amount: Number(input.amount),
     coin: 'QORT',
     recipient: input.recipientAddress,
   });
-  const signature = result.transactionSignature;
+  const signature = paymentResult.transactionSignature;
 
   if (!signature) {
     throw new Error('The QORT transfer completed without a transaction signature.');
@@ -685,6 +742,30 @@ export async function sendTip(input: {
     targetKind: input.targetKind,
     transactionSignature: signature,
   };
-  await publishRecord(input.name, record);
-  return record;
+
+  return {
+    paymentConfirmationTarget: transactionConfirmationTarget(paymentResult),
+    paymentResult,
+    record,
+  };
+}
+
+export async function publishTipReceipt(name: string, record: TipRecord) {
+  const publishResult = await publishRecord(name, record);
+
+  return {
+    publishConfirmationTarget: recordConfirmationTarget(name, record),
+    publishResult,
+    record,
+  };
+}
+
+export async function sendTip(input: SendTipInput) {
+  const payment = await sendTipPayment(input);
+  const receipt = await publishTipReceipt(input.name, payment.record);
+
+  return {
+    ...payment,
+    ...receipt,
+  };
 }

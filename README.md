@@ -41,12 +41,18 @@ Boards follows Home's inherited `theme`, `accent`, `textSize`, `language`, and
 `uiStyle` settings. Classic is the safe default, while Modern and Fun provide
 their specified geometry, type, and chrome without replacing the selected Home
 accent. The layout is responsive down to 320px and explicitly reflows for the
-2.1x `huge` text setting.
+2.1x `huge` text setting. Its base type scale matches the shared Qortium app
+values: 13px supporting text, 16px interface text, 21px section headings, and
+28px page titles before Home's selected text-size multiplier is applied.
+
+The in-app Developers workspace documents the public record schema, identifiers,
+authority rules, ordering, write limits, confirmation behavior, capabilities,
+and non-atomic native poll, attachment, and tip-receipt flows.
 
 ## Versioning
 
-Boards follows the Qortium app versioning standard (QAVS). Version `1.5.0`
-declares a minimum Qortium platform level of 1.5 and the first app release at
+Boards follows the Qortium app versioning standard (QAVS). Version `1.5.1`
+declares a minimum Qortium platform level of 1.5 and the second app release at
 that platform level. The build emits `dist/qortium-app.json`.
 
 ## Publishing
@@ -65,7 +71,13 @@ ordinary builds never publish.
 
 - Board records use the `JSON` QDN service and are limited to 24,000 encoded
   bytes.
-- Attachments publish separately under the `ATTACHMENT` service.
+- Attachments publish and confirm separately under the `ATTACHMENT` service
+  before a discussion record links them. Closing the composer can therefore
+  leave an already-public attachment unlinked.
+- Native polls confirm before their thread record is published. If the second
+  step fails, retrying publishes only the thread link and does not duplicate the
+  poll.
 - QORT tips require Home's trusted local/custom-node signing path and are hidden
-  when Home reports public-node mode.
+  when Home reports public-node mode. Payment confirmation and public receipt
+  publication are separate steps, so a receipt retry never resends the payment.
 - Deletion publishes a tombstone. It cannot erase existing QDN history.

@@ -2,12 +2,16 @@ import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from 'reac
 import {
   REACTION_VALUES,
   type AttachmentReference,
+  type BoardRecord,
+  createBoardId,
   type ReactionValue,
   type ReducedBoard,
   type ReducedPost,
   type ReducedThread,
   type ReducedTopic,
+  type TipRecord,
 } from './boardModel';
+import { copyTextToClipboard } from './clipboard';
 import {
   createEdit,
   createModeration,
@@ -19,10 +23,13 @@ import {
   loadAccountContext,
   loadBoard,
   loadNativePoll,
+  publishTipReceipt,
   publishNativePoll,
   publishRecord,
-  selectAndPublishAttachment,
-  sendTip,
+  recordConfirmationTarget,
+  selectAndPublishAttachmentWithResult,
+  sendTipPayment,
+  transactionConfirmationTarget,
   voteNativePoll,
   type AccountContext,
   type NativePoll,
@@ -34,11 +41,19 @@ import {
   getInitialDisplaySettings,
   type QdnDisplaySettings,
 } from './displaySettings';
+import {
+  transactionTarget,
+  waitForConfirmedWrite,
+  type ConfirmationResult,
+  type ConfirmationTarget,
+} from './pendingWrite';
 import { getBridgeState, hasAction, qdnRequest } from './qdnRequest';
+import { Reference } from './Reference';
 import type { BridgeState, NodeStatus } from './types';
 
 type Route =
   | { kind: 'board'; search: string }
+  | { kind: 'developers' }
   | { kind: 'thread'; postId?: string; threadId: string }
   | { kind: 'topic'; topicId: string };
 
@@ -67,11 +82,66 @@ const reactionLabels: Record<ReactionValue, string> = {
   support: 'Support',
 };
 
+type StatusSetter = (message: string) => void;
+
+function confirmationError(label: string, result: Exclude<ConfirmationResult, { phase: 'confirmed' }>) {
+  if (result.phase === 'timeout') {
+    return new Error(
+      `${label} is still awaiting network confirmation. It may confirm later; check again before resubmitting.`,
+    );
+  }
+
+  return new Error(result.error || `${label} could not be confirmed.`);
+}
+
+async function requireConfirmation(target: ConfirmationTarget, label: string) {
+  const result = await waitForConfirmedWrite(target);
+
+  if (result.phase !== 'confirmed') {
+    throw confirmationError(label, result);
+  }
+}
+
+async function confirmTransactionResult(result: unknown, label: string, setStatus: StatusSetter) {
+  const target = transactionTarget(result);
+
+  if (!target) {
+    throw new Error(`${label} was submitted, but Home did not return a transaction signature.`);
+  }
+
+  setStatus(`${label} submitted. Awaiting network confirmation…`);
+  await requireConfirmation(target, label);
+}
+
+async function confirmQdnPublication(
+  result: unknown,
+  target: ConfirmationTarget,
+  label: string,
+  setStatus: StatusSetter,
+) {
+  await confirmTransactionResult(result, label, setStatus);
+  setStatus(`${label} confirmed. Preparing the QDN resource…`);
+  await requireConfirmation(target, label);
+}
+
+async function publishConfirmedRecord(
+  name: string,
+  record: BoardRecord,
+  label: string,
+  setStatus: StatusSetter,
+) {
+  setStatus(`Waiting for Home approval to publish ${label.toLowerCase()}…`);
+  const result = await publishRecord(name, record);
+  await confirmQdnPublication(result, recordConfirmationTarget(name, record), label, setStatus);
+  return result;
+}
+
 function readRoute(): Route {
   if (typeof window === 'undefined') return { kind: 'board', search: '' };
   const query = new URLSearchParams(window.location.search);
   const threadId = query.get('thread')?.trim();
   const topicId = query.get('topic')?.trim();
+  const view = query.get('view')?.trim().toLowerCase();
 
   if (threadId) {
     return {
@@ -85,6 +155,10 @@ function readRoute(): Route {
     return { kind: 'topic', topicId };
   }
 
+  if (view === 'developers') {
+    return { kind: 'developers' };
+  }
+
   return { kind: 'board', search: query.get('search')?.trim() ?? '' };
 }
 
@@ -95,6 +169,7 @@ function routeUrl(route: Route) {
     query.set('thread', route.threadId);
     if (route.postId) query.set('post', route.postId);
   }
+  if (route.kind === 'developers') query.set('view', 'developers');
   if (route.kind === 'board' && route.search) query.set('search', route.search);
   const value = query.toString();
   return `${window.location.pathname}${value ? `?${value}` : ''}`;
@@ -272,9 +347,11 @@ function PollCard({
     setMessage('');
 
     try {
-      await voteNativePoll(poll.pollId, [selected + 1]);
-      setMessage('Vote submitted. Results will refresh after confirmation.');
-      window.setTimeout(() => void refresh(), 4_000);
+      const result = await voteNativePoll(poll.pollId, [selected + 1]);
+      await confirmTransactionResult(result, 'Vote', setMessage);
+      setMessage('Vote confirmed. Refreshing results…');
+      await refresh();
+      setMessage('Your vote has been recorded.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -336,11 +413,15 @@ function PollCard({
 }
 
 function ComposerModal({
+  canAttach,
+  canCreatePoll,
   composer,
   name,
   onClose,
   onPublished,
 }: {
+  canAttach: boolean;
+  canCreatePoll: boolean;
   composer: Exclude<Composer, null>;
   name: string;
   onClose: () => void;
@@ -374,19 +455,60 @@ function ComposerModal({
   );
   const [tags, setTags] = useState(composer.kind === 'edit-topic' ? composer.topic.tags.join(', ') : '');
   const [attachments, setAttachments] = useState<AttachmentReference[]>([]);
+  const [threadId] = useState(() => createBoardId());
   const [pollEnabled, setPollEnabled] = useState(false);
   const [pollOptions, setPollOptions] = useState(['', '']);
   const [pollEnd, setPollEnd] = useState('');
+  const [confirmedPollName, setConfirmedPollName] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
+  const [messageTone, setMessageTone] = useState<'danger' | 'info' | 'success'>('info');
+
+  function setStatus(nextMessage: string) {
+    setMessageTone('info');
+    setMessage(nextMessage);
+  }
+
+  function closeComposer() {
+    const confirmedParts = [
+      confirmedPollName ? 'native poll' : '',
+      attachments.length > 0 ? `${attachments.length} attachment${attachments.length === 1 ? '' : 's'}` : '',
+    ].filter(Boolean);
+
+    if (confirmedParts.length > 0) {
+      const description = confirmedParts.join(' and ');
+      if (
+        !window.confirm(
+          `The ${description} ${confirmedParts.length === 1 ? 'is' : 'are'} already published, but this discussion record is not. Close and leave ${confirmedParts.length === 1 ? 'it' : 'them'} unlinked?`,
+        )
+      ) {
+        return;
+      }
+    }
+
+    onClose();
+  }
 
   async function addAttachment() {
     setBusy(true);
-    setMessage('');
+    setStatus('Select a file to publish through Qortium Home…');
     try {
-      const attachment = await selectAndPublishAttachment(name);
-      if (attachment) setAttachments((current) => [...current, attachment]);
+      const published = await selectAndPublishAttachmentWithResult(name);
+      if (published) {
+        await confirmQdnPublication(
+          published.publishResult,
+          published.confirmationTarget,
+          'Attachment publication',
+          setStatus,
+        );
+        setAttachments((current) => [...current, published.attachment]);
+        setMessageTone('success');
+        setMessage('Attachment confirmed and ready to include.');
+      } else {
+        setMessage('');
+      }
     } catch (error) {
+      setMessageTone('danger');
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
@@ -405,27 +527,36 @@ function ComposerModal({
           body,
           tags.split(',').map((tag) => tag.trim()),
         );
-        await publishRecord(name, topic);
+        await publishConfirmedRecord(name, topic, 'Topic publication', setStatus);
         await onPublished({ kind: 'topic', topicId: topic.id });
         return;
       }
 
       if (composer.kind === 'thread') {
-        const threadId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
         let poll: ReducedThread['poll'] = null;
         const validOptions = pollOptions.map((option) => option.trim()).filter(Boolean);
 
         if (pollEnabled) {
+          if (!canCreatePoll) {
+            throw new Error('This Qortium Home version cannot create native polls.');
+          }
           if (validOptions.length < 2) {
             throw new Error('A native poll needs at least two options.');
           }
-          const pollName = createPollName(threadId);
-          await publishNativePoll({
-            description: title,
-            endTime: pollEnd ? new Date(pollEnd).getTime() : undefined,
-            options: validOptions,
-            pollName,
-          });
+          const pollName = confirmedPollName || createPollName(threadId);
+
+          if (!confirmedPollName) {
+            setStatus('Waiting for Home approval to create the native poll…');
+            const pollResult = await publishNativePoll({
+              description: title,
+              endTime: pollEnd ? new Date(pollEnd).getTime() : undefined,
+              options: validOptions,
+              pollName,
+            });
+            await confirmTransactionResult(pollResult, 'Native poll', setStatus);
+            setConfirmedPollName(pollName);
+          }
+
           poll = { pollName };
         }
 
@@ -437,25 +568,29 @@ function ComposerModal({
           title,
           topicId: composer.topicId,
         });
-        await publishRecord(name, thread);
+        await publishConfirmedRecord(name, thread, 'Thread publication', setStatus);
         await onPublished({ kind: 'thread', threadId: thread.id });
         return;
       }
 
       if (editEntity) {
-        await publishRecord(
+        const edit = createEdit({
+          body,
+          tags: isTopic ? tags.split(',').map((tag) => tag.trim()).filter(Boolean) : undefined,
+          targetId: editEntity.id,
+          targetKind: editEntity.kind,
+          title: 'title' in editEntity ? title : undefined,
+        });
+        await publishConfirmedRecord(
           name,
-          createEdit({
-            body,
-            tags: isTopic ? tags.split(',').map((tag) => tag.trim()).filter(Boolean) : undefined,
-            targetId: editEntity.id,
-            targetKind: editEntity.kind,
-            title: 'title' in editEntity ? title : undefined,
-          }),
+          edit,
+          'Edit publication',
+          setStatus,
         );
         await onPublished();
       }
     } catch (error) {
+      setMessageTone('danger');
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
@@ -472,7 +607,7 @@ function ComposerModal({
               {isTopic ? 'Topic' : isThread ? 'Thread' : 'Post'}
             </h2>
           </div>
-          <button aria-label="Close composer" className="button button--quiet" onClick={onClose} type="button">
+          <button aria-label="Close composer" className="button button--quiet" onClick={closeComposer} type="button">
             Close
           </button>
         </header>
@@ -512,33 +647,43 @@ function ComposerModal({
           )}
           {composer.kind === 'thread' && (
             <>
-              <div className="form-section">
-                <div>
-                  <strong>Attachments</strong>
-                  <small>Selected files publish to QDN first and are referenced by this thread.</small>
+              {canAttach ? (
+                <div className="form-section">
+                  <div>
+                    <strong>Attachments</strong>
+                    <small>Selected files publish and confirm before this thread can reference them.</small>
+                  </div>
+                  <button className="button button--secondary" disabled={busy} onClick={addAttachment} type="button">
+                    Add file
+                  </button>
                 </div>
-                <button className="button button--secondary" disabled={busy} onClick={addAttachment} type="button">
-                  Add file
-                </button>
-              </div>
+              ) : null}
               <AttachmentList attachments={attachments} />
-              <label className="toggle-row">
-                <input
-                  checked={pollEnabled}
-                  onChange={(event) => setPollEnabled(event.target.checked)}
-                  type="checkbox"
-                />
-                <span>
-                  <strong>Add a native poll</strong>
-                  <small>Votes are public, signed Core transactions.</small>
-                </span>
-              </label>
-              {pollEnabled && (
+              {canCreatePoll ? (
+                <label className="toggle-row">
+                  <input
+                    checked={pollEnabled}
+                    disabled={Boolean(confirmedPollName)}
+                    onChange={(event) => setPollEnabled(event.target.checked)}
+                    type="checkbox"
+                  />
+                  <span>
+                    <strong>Add a native poll</strong>
+                    <small>
+                      {confirmedPollName
+                        ? 'Poll confirmed. Retry will publish only the thread record.'
+                        : 'Votes are public, signed Core transactions.'}
+                    </small>
+                  </span>
+                </label>
+              ) : null}
+              {canCreatePoll && pollEnabled && (
                 <div className="poll-builder">
                   {pollOptions.map((option, index) => (
                     <label key={index}>
                       <span>Option {index + 1}</span>
                       <input
+                        disabled={Boolean(confirmedPollName)}
                         onChange={(event) =>
                           setPollOptions((current) =>
                             current.map((item, itemIndex) =>
@@ -553,6 +698,7 @@ function ComposerModal({
                   ))}
                   <button
                     className="button button--quiet"
+                    disabled={Boolean(confirmedPollName)}
                     onClick={() => setPollOptions((current) => [...current, ''])}
                     type="button"
                   >
@@ -561,6 +707,7 @@ function ComposerModal({
                   <label>
                     <span>Optional closing time</span>
                     <input
+                      disabled={Boolean(confirmedPollName)}
                       min={new Date(Date.now() + 60_000).toISOString().slice(0, 16)}
                       onChange={(event) => setPollEnd(event.target.value)}
                       type="datetime-local"
@@ -571,11 +718,11 @@ function ComposerModal({
               )}
             </>
           )}
-          {message ? <Notice tone="danger">{message}</Notice> : null}
+          {message ? <Notice tone={messageTone}>{message}</Notice> : null}
           <footer className="modal__footer">
             <span>Publishing as <strong>{name}</strong></span>
             <button className="button button--primary" disabled={busy} type="submit">
-              {busy ? 'Publishing…' : editEntity ? 'Publish edit' : 'Publish'}
+              {busy ? 'Awaiting confirmation…' : editEntity ? 'Publish edit' : 'Publish'}
             </button>
           </footer>
         </form>
@@ -596,13 +743,34 @@ function TipModal({
   onPublished: () => Promise<void>;
 }) {
   const [amount, setAmount] = useState('1');
+  const [confirmedPayment, setConfirmedPayment] = useState<TipRecord | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
+  const [messageTone, setMessageTone] = useState<'danger' | 'info' | 'success'>('info');
+
+  function setStatus(nextMessage: string) {
+    setMessageTone('info');
+    setMessage(nextMessage);
+  }
+
+  function closeTip() {
+    if (
+      confirmedPayment &&
+      !window.confirm(
+        'The QORT payment is confirmed, but its public Boards receipt is not. Close without publishing the receipt?',
+      )
+    ) {
+      return;
+    }
+
+    onClose();
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
-    setMessage('Resolving recipient…');
+    setStatus('Resolving recipient…');
+    let paymentIsConfirmed = Boolean(confirmedPayment);
 
     try {
       const recipientAddress = composer.target.ownerAddress;
@@ -611,18 +779,52 @@ function TipModal({
         throw new Error(`Could not resolve the owner address for ${composer.target.ownerName}.`);
       }
 
-      setMessage('Waiting for Home approval…');
-      await sendTip({
-        amount,
-        name,
-        recipientAddress,
-        recipientName: composer.target.ownerName,
-        targetId: composer.target.id,
-        targetKind: composer.targetKind,
-      });
+      let receiptRecord = confirmedPayment;
+
+      if (!receiptRecord) {
+        setStatus('Waiting for Home approval to send the QORT payment…');
+        const payment = await sendTipPayment({
+          amount,
+          name,
+          recipientAddress,
+          recipientName: composer.target.ownerName,
+          targetId: composer.target.id,
+          targetKind: composer.targetKind,
+        });
+        const paymentTarget =
+          payment.paymentConfirmationTarget ??
+          transactionConfirmationTarget(payment.paymentResult);
+
+        if (!paymentTarget) {
+          throw new Error('Payment was submitted, but Home did not return a transaction signature.');
+        }
+
+        setStatus('Payment submitted. Awaiting network confirmation…');
+        await requireConfirmation(paymentTarget, 'Tip payment');
+        receiptRecord = payment.record;
+        paymentIsConfirmed = true;
+        setConfirmedPayment(receiptRecord);
+      }
+
+      setStatus('Payment confirmed. Publishing the public tip receipt…');
+      const receipt = await publishTipReceipt(name, receiptRecord);
+      await confirmQdnPublication(
+        receipt.publishResult,
+        receipt.publishConfirmationTarget,
+        'Tip receipt',
+        setStatus,
+      );
+      setMessageTone('success');
+      setMessage('Payment and tip receipt confirmed.');
       await onPublished();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
+      setMessageTone('danger');
+      const detail = error instanceof Error ? error.message : String(error);
+      setMessage(
+        paymentIsConfirmed
+          ? `The QORT payment is already confirmed; retry will publish only its receipt. ${detail}`
+          : detail,
+      );
     } finally {
       setBusy(false);
     }
@@ -636,7 +838,7 @@ function TipModal({
             <span className="eyebrow">Verified receipt</span>
             <h2 id="tip-title">Tip {composer.target.ownerName}</h2>
           </div>
-          <button className="button button--quiet" onClick={onClose} type="button">
+          <button className="button button--quiet" onClick={closeTip} type="button">
             Close
           </button>
         </header>
@@ -645,6 +847,7 @@ function TipModal({
             <span>QORT amount</span>
             <input
               min="0.00000001"
+              disabled={Boolean(confirmedPayment)}
               onChange={(event) => setAmount(event.target.value)}
               required
               step="0.00000001"
@@ -656,11 +859,11 @@ function TipModal({
             Home will show the recipient and amount before signing. Boards stores the returned
             transaction signature instead of a mutable tip counter.
           </Notice>
-          {message ? <p className="form-message">{message}</p> : null}
+          {message ? <Notice tone={messageTone}>{message}</Notice> : null}
           <footer className="modal__footer">
             <span>Receipt publisher: <strong>{name}</strong></span>
             <button className="button button--primary" disabled={busy} type="submit">
-              {busy ? 'Working…' : 'Review and send'}
+              {busy ? 'Awaiting confirmation…' : confirmedPayment ? 'Publish receipt' : 'Review and send'}
             </button>
           </footer>
         </form>
@@ -695,16 +898,16 @@ export function App() {
     Boolean(selectedName) &&
     Boolean(bridge?.isHomeBridge) &&
     hasAction(bridge?.actions ?? [], 'PUBLISH_QDN_RESOURCE');
-  const canPoll =
+  const canCreatePoll =
     canPublish &&
-    hasAction(bridge?.actions ?? [], 'CREATE_POLL', 'VOTE_ON_POLL');
+    hasAction(bridge?.actions ?? [], 'CREATE_POLL');
+  const canVote =
+    canPublish &&
+    hasAction(bridge?.actions ?? [], 'VOTE_ON_POLL');
   const canAttach =
     canPublish &&
-    hasAction(
-      bridge?.actions ?? [],
-      'SELECT_QDN_PUBLISH_SOURCE',
-      'PUBLISH_QDN_RESOURCE',
-    );
+    hasAction(bridge?.actions ?? [], 'SELECT_QDN_PUBLISH_SOURCE') &&
+    hasAction(bridge?.actions ?? [], 'PUBLISH_QDN_RESOURCE');
   const canTip =
     canPublish &&
     !bridge?.isUsingPublicNode &&
@@ -829,11 +1032,11 @@ export function App() {
       : null;
 
   async function publishAndRefresh(nextRoute?: Route) {
-    setMessage('Published. Refreshing QDN records…');
+    setMessage('Publication confirmed. Refreshing QDN records…');
     setComposer(null);
     await refreshBoard(true);
     if (nextRoute) navigate(nextRoute);
-    setMessage('Published successfully.');
+    setMessage('Published and confirmed.');
   }
 
   async function handleReaction(
@@ -845,8 +1048,10 @@ export function App() {
     setWorking(true);
     setError('');
     try {
-      await publishRecord(selectedName, createReaction(targetKind, targetId, reaction));
+      const record = createReaction(targetKind, targetId, reaction);
+      await publishConfirmedRecord(selectedName, record, 'Reaction publication', setMessage);
       await refreshBoard(true);
+      setMessage(reaction ? 'Reaction confirmed.' : 'Reaction removal confirmed.');
     } catch (reactionError) {
       setError(reactionError instanceof Error ? reactionError.message : String(reactionError));
     } finally {
@@ -859,17 +1064,22 @@ export function App() {
       return;
     }
     setWorking(true);
+    setError('');
     try {
-      await publishRecord(
+      const tombstone = createEdit({
+        deleted: true,
+        targetId: target.id,
+        targetKind: target.kind,
+      });
+      await publishConfirmedRecord(
         selectedName,
-        createEdit({
-          deleted: true,
-          targetId: target.id,
-          targetKind: target.kind,
-        }),
+        tombstone,
+        'Deletion tombstone',
+        setMessage,
       );
       await refreshBoard(true);
       if (target.kind !== 'post') navigate({ kind: 'board', search: '' });
+      setMessage('Deletion tombstone confirmed.');
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : String(deleteError));
     } finally {
@@ -882,9 +1092,12 @@ export function App() {
     action: Parameters<typeof createModeration>[2],
   ) {
     setWorking(true);
+    setError('');
     try {
-      await publishRecord(selectedName, createModeration(target.kind, target.id, action));
+      const record = createModeration(target.kind, target.id, action);
+      await publishConfirmedRecord(selectedName, record, 'Moderation update', setMessage);
       await refreshBoard(true);
+      setMessage('Moderation update confirmed.');
     } catch (moderationError) {
       setError(
         moderationError instanceof Error ? moderationError.message : String(moderationError),
@@ -906,12 +1119,13 @@ export function App() {
         replyToId,
         threadId: currentThread.id,
       });
-      await publishRecord(selectedName, post);
+      await publishConfirmedRecord(selectedName, post, 'Reply publication', setMessage);
       setReplyBody('');
       setReplyToId(null);
       setReplyAttachments([]);
       await refreshBoard(true);
       navigate({ kind: 'thread', postId: post.id, threadId: currentThread.id }, true);
+      setMessage('Reply published and confirmed.');
     } catch (replyError) {
       setError(replyError instanceof Error ? replyError.message : String(replyError));
     } finally {
@@ -922,9 +1136,22 @@ export function App() {
   async function addReplyAttachment() {
     if (!canAttach) return;
     setWorking(true);
+    setError('');
     try {
-      const attachment = await selectAndPublishAttachment(selectedName);
-      if (attachment) setReplyAttachments((current) => [...current, attachment]);
+      setMessage('Select a file to publish through Qortium Home…');
+      const published = await selectAndPublishAttachmentWithResult(selectedName);
+      if (published) {
+        await confirmQdnPublication(
+          published.publishResult,
+          published.confirmationTarget,
+          'Attachment publication',
+          setMessage,
+        );
+        setReplyAttachments((current) => [...current, published.attachment]);
+        setMessage('Attachment confirmed and ready to include.');
+      } else {
+        setMessage('');
+      }
     } catch (attachmentError) {
       setError(
         attachmentError instanceof Error ? attachmentError.message : String(attachmentError),
@@ -934,12 +1161,12 @@ export function App() {
     }
   }
 
-  function share(routeToShare: Route) {
+  async function share(routeToShare: Route) {
     const url = new URL(routeUrl(routeToShare), window.location.href).toString();
-    void navigator.clipboard?.writeText(
+    const copied = await copyTextToClipboard(
       url.replace(/^https?:\/\/[^/]+/, 'qdn://APP/Boards/Boards'),
     );
-    setMessage('QDN deep link copied.');
+    setMessage(copied ? 'QDN deep link copied.' : 'Copy is unavailable in this view.');
   }
 
   const search = route.kind === 'board' ? route.search.toLowerCase() : '';
@@ -963,7 +1190,7 @@ export function App() {
   return (
     <div className="app">
       <a className="skip-link" href="#boards-main">
-        Skip to discussions
+        Skip to Boards content
       </a>
       <header className="app-topbar">
         <button
@@ -1007,7 +1234,12 @@ export function App() {
               New topic
             </button>
           ) : null}
-          <button className="account-button" onClick={() => void loadContext()} type="button">
+          <button
+            aria-label={`Refresh account context for ${selectedName || 'read-only browsing'}`}
+            className="account-button"
+            onClick={() => void loadContext()}
+            type="button"
+          >
             <Avatar name={selectedName || accountContext.account?.address || 'Guest'} />
             <span>
               <strong>{selectedName || 'Read only'}</strong>
@@ -1016,6 +1248,24 @@ export function App() {
           </button>
         </div>
       </header>
+      <nav aria-label="Boards workspaces" className="app-tabs">
+        <button
+          aria-current={route.kind === 'developers' ? undefined : 'page'}
+          className={`app-tab${route.kind === 'developers' ? '' : ' is-active'}`}
+          onClick={() => navigate({ kind: 'board', search: '' })}
+          type="button"
+        >
+          Browse
+        </button>
+        <button
+          aria-current={route.kind === 'developers' ? 'page' : undefined}
+          className={`app-tab${route.kind === 'developers' ? ' is-active' : ''}`}
+          onClick={() => navigate({ kind: 'developers' })}
+          type="button"
+        >
+          Developers
+        </button>
+      </nav>
 
       <main className="app-main" id="boards-main">
         <div className="route-announcer" aria-live="polite">
@@ -1023,6 +1273,8 @@ export function App() {
             ? search
               ? `Search results for ${route.search}`
               : 'Boards home'
+            : route.kind === 'developers'
+              ? 'Boards developer reference'
             : route.kind === 'topic'
               ? currentTopic?.title ?? 'Topic not found'
               : currentThread?.title ?? 'Thread not found'}
@@ -1053,7 +1305,7 @@ export function App() {
         </div>
 
         {loading ? <Notice>Loading QDN discussions…</Notice> : null}
-        {message ? <Notice tone="success">{message}</Notice> : null}
+        {message ? <Notice>{message}</Notice> : null}
         {error ? <Notice tone="danger">{error}</Notice> : null}
         {!bridge?.isHomeBridge && !loading ? (
           <Notice tone="warning">
@@ -1067,15 +1319,17 @@ export function App() {
           </Notice>
         ) : null}
 
+        {route.kind === 'developers' ? <Reference /> : null}
+
         {route.kind === 'board' && (
           <>
-            <section className="hero">
+            <section className="hero board-overview">
               <div>
-                <span className="eyebrow">Durable community knowledge</span>
-                <h1>Discuss ideas in public, verifiable threads.</h1>
+                <span className="eyebrow">Public QDN discussions</span>
+                <h1>Community discussions</h1>
                 <p>
-                  Boards separates author content, reactions, moderation, polls and tip
-                  receipts into authenticated QDN records.
+                  Browse topics and threads whose authorship, edits, reactions, moderation,
+                  polls, and tip receipts can be checked against confirmed transactions.
                 </p>
               </div>
               <div className="hero__stats">
@@ -1218,7 +1472,7 @@ export function App() {
                   </div>
                 </div>
                 <div className="entity-actions">
-                  <button className="button button--quiet" onClick={() => share(route)} type="button">
+                  <button className="button button--quiet" onClick={() => void share(route)} type="button">
                     Share
                   </button>
                   {currentTopic.ownerAddress === currentAddress ? (
@@ -1333,7 +1587,7 @@ export function App() {
                   <p>Started by {currentThread.ownerName} · {formatDate(currentThread.resourceCreated)}</p>
                 </div>
                 <div className="entity-actions">
-                  <button className="button button--quiet" onClick={() => share(route)} type="button">Share</button>
+                  <button className="button button--quiet" onClick={() => void share(route)} type="button">Share</button>
                   {currentThread.ownerAddress === currentAddress ? (
                     <>
                       <button className="button button--secondary" onClick={() => setComposer({ kind: 'edit-thread', thread: currentThread })} type="button">Edit</button>
@@ -1356,7 +1610,7 @@ export function App() {
                     <RichBody body={currentThread.body} />
                     <AttachmentList attachments={currentThread.attachments} />
                     {currentThread.poll ? (
-                      <PollCard canVote={canPoll} pollName={currentThread.poll.pollName} />
+                      <PollCard canVote={canVote} pollName={currentThread.poll.pollName} />
                     ) : null}
                     <footer className="post-card__footer">
                       <ReactionBar
@@ -1534,6 +1788,8 @@ export function App() {
 
       {composer && composer.kind !== 'tip' ? (
         <ComposerModal
+          canAttach={canAttach}
+          canCreatePoll={canCreatePoll}
           composer={composer}
           name={selectedName}
           onClose={() => setComposer(null)}
@@ -1548,7 +1804,7 @@ export function App() {
           onPublished={async () => {
             setComposer(null);
             await refreshBoard(true);
-            setMessage('Tip sent and receipt published.');
+            setMessage('Tip payment and receipt confirmed.');
           }}
         />
       ) : null}

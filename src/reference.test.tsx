@@ -45,6 +45,10 @@ describe('BoardsReference', () => {
     expect(html).toContain('PAYMENT');
     expect(html).toContain('0.00000001');
     expect(html).toContain('/transactions/signature/');
+    expect(html).toContain('?topic=');
+    expect(html).toContain('?thread=');
+    expect(html).toContain('&amp;post=');
+    expect(html).toContain('injected render globals');
   });
 
   it('documents exact per-feature bridge actions and public-write semantics', () => {

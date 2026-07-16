@@ -42,6 +42,15 @@ import {
   type QdnDisplaySettings,
 } from './displaySettings';
 import {
+  buildRouteLink,
+  readRoute,
+  resolvePostTarget,
+  routeUrl,
+  shouldReplaceHistory,
+  type BoardsRoute as Route,
+  type NavigationIntent,
+} from './deepLink';
+import {
   transactionTarget,
   waitForConfirmedWrite,
   type ConfirmationResult,
@@ -50,12 +59,6 @@ import {
 import { getBridgeState, hasAction, qdnRequest } from './qdnRequest';
 import { Reference } from './Reference';
 import type { BridgeState, NodeStatus } from './types';
-
-type Route =
-  | { kind: 'board'; search: string }
-  | { kind: 'developers' }
-  | { kind: 'thread'; postId?: string; threadId: string }
-  | { kind: 'topic'; topicId: string };
 
 type Composer =
   | { kind: 'edit-post'; post: ReducedPost }
@@ -134,45 +137,6 @@ async function publishConfirmedRecord(
   const result = await publishRecord(name, record);
   await confirmQdnPublication(result, recordConfirmationTarget(name, record), label, setStatus);
   return result;
-}
-
-function readRoute(): Route {
-  if (typeof window === 'undefined') return { kind: 'board', search: '' };
-  const query = new URLSearchParams(window.location.search);
-  const threadId = query.get('thread')?.trim();
-  const topicId = query.get('topic')?.trim();
-  const view = query.get('view')?.trim().toLowerCase();
-
-  if (threadId) {
-    return {
-      kind: 'thread',
-      postId: query.get('post')?.trim() || undefined,
-      threadId,
-    };
-  }
-
-  if (topicId) {
-    return { kind: 'topic', topicId };
-  }
-
-  if (view === 'developers') {
-    return { kind: 'developers' };
-  }
-
-  return { kind: 'board', search: query.get('search')?.trim() ?? '' };
-}
-
-function routeUrl(route: Route) {
-  const query = new URLSearchParams();
-  if (route.kind === 'topic') query.set('topic', route.topicId);
-  if (route.kind === 'thread') {
-    query.set('thread', route.threadId);
-    if (route.postId) query.set('post', route.postId);
-  }
-  if (route.kind === 'developers') query.set('view', 'developers');
-  if (route.kind === 'board' && route.search) query.set('search', route.search);
-  const value = query.toString();
-  return `${window.location.pathname}${value ? `?${value}` : ''}`;
 }
 
 function formatDate(value: number) {
@@ -887,12 +851,14 @@ export function App() {
   const [replyBody, setReplyBody] = useState('');
   const [replyToId, setReplyToId] = useState<string | null>(null);
   const [replyAttachments, setReplyAttachments] = useState<AttachmentReference[]>([]);
+  const [copiedPostId, setCopiedPostId] = useState<string | null>(null);
   const [searchInput, setSearchInput] = useState(route.kind === 'board' ? route.search : '');
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const deepLinkRef = useRef<HTMLDivElement | null>(null);
+  const copyFeedbackTimerRef = useRef<number | null>(null);
 
   const canPublish =
     Boolean(selectedName) &&
@@ -917,9 +883,13 @@ export function App() {
     board.admins.includes(currentAddress) ||
     board.moderators.includes(currentAddress);
 
-  function navigate(next: Route, replace = false) {
+  function navigate(next: Route, intent: NavigationIntent = 'standard') {
     if (typeof window !== 'undefined') {
-      window.history[replace ? 'replaceState' : 'pushState']({}, '', routeUrl(next));
+      window.history[shouldReplaceHistory(intent) ? 'replaceState' : 'pushState'](
+        {},
+        '',
+        routeUrl(next),
+      );
     }
     setRoute(next);
     setComposer(null);
@@ -995,14 +965,14 @@ export function App() {
     void loadContext();
   }, []);
 
-  useEffect(() => {
-    if (route.kind === 'thread' && route.postId) {
-      window.setTimeout(() => {
-        deepLinkRef.current?.scrollIntoView({ block: 'center' });
-        deepLinkRef.current?.focus();
-      }, 120);
-    }
-  }, [route]);
+  useEffect(
+    () => () => {
+      if (copyFeedbackTimerRef.current !== null) {
+        window.clearTimeout(copyFeedbackTimerRef.current);
+      }
+    },
+    [],
+  );
 
   const visibleTopics = useMemo(
     () => board.topics.filter((topic) => !topic.deleted && (!topic.hidden || isStaff)),
@@ -1030,6 +1000,17 @@ export function App() {
     route.kind === 'thread'
       ? visibleThreads.find((thread) => thread.id === route.threadId) ?? null
       : null;
+  const postTarget = resolvePostTarget(route, visiblePosts);
+
+  useEffect(() => {
+    if (loading || postTarget.kind !== 'found') return;
+
+    const frame = window.requestAnimationFrame(() => {
+      deepLinkRef.current?.scrollIntoView({ block: 'center' });
+      deepLinkRef.current?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [loading, postTarget.kind, postTarget.kind === 'found' ? postTarget.post.id : null]);
 
   async function publishAndRefresh(nextRoute?: Route) {
     setMessage('Publication confirmed. Refreshing QDN records…');
@@ -1124,7 +1105,10 @@ export function App() {
       setReplyToId(null);
       setReplyAttachments([]);
       await refreshBoard(true);
-      navigate({ kind: 'thread', postId: post.id, threadId: currentThread.id }, true);
+      navigate(
+        { kind: 'thread', postId: post.id, threadId: currentThread.id },
+        'published-reply',
+      );
       setMessage('Reply published and confirmed.');
     } catch (replyError) {
       setError(replyError instanceof Error ? replyError.message : String(replyError));
@@ -1161,11 +1145,21 @@ export function App() {
     }
   }
 
-  async function share(routeToShare: Route) {
-    const url = new URL(routeUrl(routeToShare), window.location.href).toString();
-    const copied = await copyTextToClipboard(
-      url.replace(/^https?:\/\/[^/]+/, 'qdn://APP/Boards/Boards'),
-    );
+  async function share(routeToShare: Route, postId?: string) {
+    const copied = await copyTextToClipboard(buildRouteLink(routeToShare));
+
+    if (copied && postId) {
+      setCopiedPostId(postId);
+      if (copyFeedbackTimerRef.current !== null) {
+        window.clearTimeout(copyFeedbackTimerRef.current);
+      }
+      copyFeedbackTimerRef.current = window.setTimeout(() => {
+        setCopiedPostId((current) => (current === postId ? null : current));
+        copyFeedbackTimerRef.current = null;
+      }, 2_000);
+      return;
+    }
+
     setMessage(copied ? 'QDN deep link copied.' : 'Copy is unavailable in this view.');
   }
 
@@ -1473,7 +1467,7 @@ export function App() {
                 </div>
                 <div className="entity-actions">
                   <button className="button button--quiet" onClick={() => void share(route)} type="button">
-                    Share
+                    Copy topic link
                   </button>
                   {currentTopic.ownerAddress === currentAddress ? (
                     <>
@@ -1587,7 +1581,15 @@ export function App() {
                   <p>Started by {currentThread.ownerName} · {formatDate(currentThread.resourceCreated)}</p>
                 </div>
                 <div className="entity-actions">
-                  <button className="button button--quiet" onClick={() => void share(route)} type="button">Share</button>
+                  <button
+                    className="button button--quiet"
+                    onClick={() =>
+                      void share({ kind: 'thread', threadId: currentThread.id })
+                    }
+                    type="button"
+                  >
+                    Copy thread link
+                  </button>
                   {currentThread.ownerAddress === currentAddress ? (
                     <>
                       <button className="button button--secondary" onClick={() => setComposer({ kind: 'edit-thread', thread: currentThread })} type="button">Edit</button>
@@ -1652,6 +1654,26 @@ export function App() {
                         </h2>
                       </div>
                     </header>
+                    {postTarget.kind === 'missing' ? (
+                      <Notice tone="warning">
+                        <span>
+                          This linked reply is unavailable, deleted, hidden, or belongs to a
+                          different thread. The rest of the conversation is still available.
+                        </span>{' '}
+                        <button
+                          className="link-button"
+                          onClick={() =>
+                            navigate(
+                              { kind: 'thread', threadId: currentThread.id },
+                              'clear-target',
+                            )
+                          }
+                          type="button"
+                        >
+                          Show whole thread
+                        </button>
+                      </Notice>
+                    ) : null}
                     <ol className="reply-list">
                       {visiblePosts
                         .filter((post) => post.threadId === currentThread.id)
@@ -1663,9 +1685,10 @@ export function App() {
                           return (
                             <li key={post.id}>
                               <article
-                                className={`post-card${route.postId === post.id ? ' is-targeted' : ''}`}
-                                ref={route.postId === post.id ? deepLinkRef : undefined}
-                                tabIndex={route.postId === post.id ? -1 : undefined}
+                                className={`post-card${postTarget.kind === 'found' && postTarget.post.id === post.id ? ' is-targeted' : ''}`}
+                                id={`post-${post.id}`}
+                                ref={postTarget.kind === 'found' && postTarget.post.id === post.id ? deepLinkRef : undefined}
+                                tabIndex={postTarget.kind === 'found' && postTarget.post.id === post.id ? -1 : undefined}
                               >
                                 <header className="post-card__header">
                                   <Avatar name={post.ownerName} />
@@ -1678,7 +1701,13 @@ export function App() {
                                 {repliedTo ? (
                                   <button
                                     className="reply-reference"
-                                    onClick={() => navigate({ kind: 'thread', postId: repliedTo.id, threadId: currentThread.id }, true)}
+                                    onClick={() =>
+                                      navigate({
+                                        kind: 'thread',
+                                        postId: repliedTo.id,
+                                        threadId: currentThread.id,
+                                      })
+                                    }
                                     type="button"
                                   >
                                     In reply to {repliedTo.ownerName}: “{repliedTo.body.slice(0, 110)}”
@@ -1695,6 +1724,22 @@ export function App() {
                                     onReact={(reaction) => void handleReaction('post', post.id, reaction)}
                                   />
                                   <div className="post-actions">
+                                    <button
+                                      className="link-button"
+                                      onClick={() =>
+                                        void share(
+                                          {
+                                            kind: 'thread',
+                                            postId: post.id,
+                                            threadId: currentThread.id,
+                                          },
+                                          post.id,
+                                        )
+                                      }
+                                      type="button"
+                                    >
+                                      {copiedPostId === post.id ? 'Copied' : 'Copy link'}
+                                    </button>
                                     {canPublish && !currentThread.locked ? (
                                       <button className="link-button" onClick={() => setReplyToId(post.id)} type="button">
                                         Reply

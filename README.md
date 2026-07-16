@@ -49,10 +49,23 @@ The in-app Developers workspace documents the public record schema, identifiers,
 authority rules, ordering, write limits, confirmation behavior, capabilities,
 and non-atomic native poll, attachment, and tip-receipt flows.
 
+## Direct links
+
+Topics, threads, and individual replies have stable QDN links:
+
+- `qdn://APP/Boards/Boards?topic=<topicId>`
+- `qdn://APP/Boards/Boards?thread=<threadId>`
+- `qdn://APP/Boards/Boards?thread=<threadId>&post=<postId>`
+
+The app derives the QDN identity from Core's injected render globals, so links
+copied from a mirror keep that mirror's service, name, and identifier. A reply
+link opens its thread, focuses and highlights the requested reply, and leaves
+the rest of the conversation available if that reply can no longer be shown.
+
 ## Versioning
 
-Boards follows the Qortium app versioning standard (QAVS). Version `1.5.1`
-declares a minimum Qortium platform level of 1.5 and the second app release at
+Boards follows the Qortium app versioning standard (QAVS). Version `1.5.2`
+declares a minimum Qortium platform level of 1.5 and the third app release at
 that platform level. The build emits `dist/qortium-app.json`.
 
 ## Publishing

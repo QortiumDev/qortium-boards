@@ -172,6 +172,7 @@ export function BoardsReference({ onBack }: BoardsReferenceProps) {
         <a href="#reference-identifiers">Identifiers</a>
         <a href="#reference-authenticity">Authenticity</a>
         <a href="#reference-state">State reduction</a>
+        <a href="#reference-links">Direct links</a>
         <a href="#reference-features">Polls, files and tips</a>
         <a href="#reference-bridge">Bridge examples</a>
       </nav>
@@ -340,6 +341,40 @@ export function BoardsReference({ onBack }: BoardsReferenceProps) {
               unpin, show or unsolve reverses its paired action.
             </p>
           </article>
+        </div>
+      </section>
+
+      <section className="reference-section" id="reference-links">
+        <header>
+          <span className="eyebrow">Addressing</span>
+          <h2>Topic, thread and reply links</h2>
+        </header>
+        <div className="reference-grid">
+          <article className="reference-card">
+            <h3>Stable query routes</h3>
+            <p>
+              Topic links use <code>?topic={'{topicId}'}</code>. Thread links use{' '}
+              <code>?thread={'{threadId}'}</code>, and an individual reply adds{' '}
+              <code>&amp;post={'{postId}'}</code>. The thread id remains required so Boards
+              can reject a post id that belongs to another conversation.
+            </p>
+          </article>
+          <article className="reference-card">
+            <h3>Mirror-safe QDN identity</h3>
+            <p>
+              Copied links use <code>qdn://service/name/identifier</code> from Core&apos;s
+              injected render globals. The app falls back to its render path and then{' '}
+              <code>qdn://APP/Boards/Boards</code> during local development.
+            </p>
+          </article>
+          <aside className="reference-callout">
+            <strong>Unavailable replies do not hide the thread.</strong>
+            <p>
+              If a requested reply is deleted, hidden, missing, or associated with another
+              thread, Boards explains that the target is unavailable and continues showing
+              the valid conversation.
+            </p>
+          </aside>
         </div>
       </section>
 

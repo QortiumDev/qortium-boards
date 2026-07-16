@@ -1,0 +1,32 @@
+{
+  "name": "qortium-boards",
+  "version": "1.5.0",
+  "private": true,
+  "license": "0BSD",
+  "description": "A QDN discussion board for Qortium communities.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && vite build",
+    "dev": "vite",
+    "preview": "vite preview",
+    "qdn:publish": "node scripts/publish-qdn.mjs",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@fontsource/comic-neue": "^5.2.7",
+    "@fontsource/fredoka": "^5.2.10",
+    "@fontsource/inter": "^5.2.7",
+    "@fontsource/lexend": "^5.2.7",
+    "@vitejs/plugin-react": "^6.0.2",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.16"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.2",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "vitest": "^4.1.8"
+  }
+}

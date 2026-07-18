@@ -3,6 +3,7 @@ import {
   buildRouteLink,
   getAppBaseAddress,
   readRoute,
+  resolveDiscussionAvailability,
   resolvePostTarget,
   routeUrl,
   shouldReplaceHistory,
@@ -116,5 +117,12 @@ describe('Boards deep links', () => {
     expect(shouldReplaceHistory('standard')).toBe(false);
     expect(shouldReplaceHistory('published-reply')).toBe(true);
     expect(shouldReplaceHistory('clear-target')).toBe(true);
+  });
+
+  it('does not declare a discussion missing while loading or records are unavailable', () => {
+    expect(resolveDiscussionAvailability(true, false, false)).toBe('loading');
+    expect(resolveDiscussionAvailability(false, true, true)).toBe('found');
+    expect(resolveDiscussionAvailability(false, false, true)).toBe('unavailable');
+    expect(resolveDiscussionAvailability(false, false, false)).toBe('not-found');
   });
 });

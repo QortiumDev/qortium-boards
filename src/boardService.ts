@@ -137,6 +137,33 @@ function responseData<T>(value: unknown): T {
 const recordCache = new Map<string, { signature: string; value: BoardResource }>();
 const transactionCache = new Map<string, ArbitraryTransaction>();
 
+export type BoardDescriptorCounts = {
+  posts: number;
+  threads: number;
+  topics: number;
+};
+
+export type BoardLoadProgress = {
+  descriptorCounts: BoardDescriptorCounts | null;
+  discoveredResourceCount: number;
+  phase: 'fetching' | 'listing';
+  processedResourceCount: number;
+  unavailableIdentifiers: string[];
+  unavailableResourceCount: number;
+};
+
+export type BoardLoadResult = {
+  board: ReducedBoard;
+  descriptorCounts: BoardDescriptorCounts;
+  discoveredResourceCount: number;
+  unavailableIdentifiers: string[];
+  unavailableResourceCount: number;
+};
+
+export type BoardLoadOptions = {
+  onProgress?: (progress: BoardLoadProgress) => void;
+};
+
 type ArbitraryTransaction = {
   blockHeight?: number;
   creatorAddress?: string;
@@ -170,6 +197,14 @@ async function fetchTransaction<T>(signature: string): Promise<T> {
   );
 }
 
+async function retryOnce<T>(operation: (retrying: boolean) => Promise<T>): Promise<T> {
+  try {
+    return await operation(false);
+  } catch {
+    return operation(true);
+  }
+}
+
 async function validateTipReceipt(payload: TipRecord, publisherAddress: string) {
   const transaction = await fetchTransaction<PaymentTransaction>(payload.transactionSignature);
   const expectedAmount = Number(payload.amount);
@@ -185,9 +220,14 @@ async function validateTipReceipt(payload: TipRecord, publisherAddress: string) 
   );
 }
 
-async function fetchBoardResource(resource: QdnResource): Promise<BoardResource | null> {
+type BoardResourceFetchResult =
+  | { status: 'ignored' }
+  | { status: 'loaded'; value: BoardResource }
+  | { status: 'unavailable' };
+
+async function fetchBoardResource(resource: QdnResource): Promise<BoardResourceFetchResult> {
   if (!resource.identifier) {
-    return null;
+    return { status: 'ignored' };
   }
 
   const key = cacheKey(resource);
@@ -195,17 +235,17 @@ async function fetchBoardResource(resource: QdnResource): Promise<BoardResource 
   const cached = signature ? recordCache.get(key) : undefined;
 
   if (cached && cached.signature === signature) {
-    return cached.value;
+    return { status: 'loaded', value: cached.value };
   }
 
   try {
     if (!signature) {
-      return null;
+      return { status: 'ignored' };
     }
 
     let transaction = transactionCache.get(signature);
     if (!transaction) {
-      transaction = await fetchTransaction<ArbitraryTransaction>(signature);
+      transaction = await retryOnce(() => fetchTransaction<ArbitraryTransaction>(signature));
       transactionCache.set(signature, transaction);
     }
 
@@ -218,24 +258,27 @@ async function fetchBoardResource(resource: QdnResource): Promise<BoardResource 
       transaction.identifier !== resource.identifier ||
       transaction.signature !== signature
     ) {
-      return null;
+      return { status: 'ignored' };
     }
 
-    const value = await qdnRequest<unknown>({
-      action: 'FETCH_QDN_RESOURCE',
-      identifier: resource.identifier,
-      maxBytes: MAX_RECORD_BYTES,
-      name: resource.name,
-      service: resource.service,
-    });
+    const value = await retryOnce((retrying) =>
+      qdnRequest<unknown>({
+        action: 'FETCH_QDN_RESOURCE',
+        identifier: resource.identifier,
+        maxBytes: MAX_RECORD_BYTES,
+        name: resource.name,
+        rebuild: retrying,
+        service: resource.service,
+      }),
+    );
     const payload = normalizeBoardRecord(parseQdnJson(value));
 
     if (!payload) {
-      return null;
+      return { status: 'ignored' };
     }
 
     if (payload.kind === 'tip' && !(await validateTipReceipt(payload, transaction.creatorAddress))) {
-      return null;
+      return { status: 'ignored' };
     }
 
     const normalized: BoardResource = {
@@ -253,9 +296,9 @@ async function fetchBoardResource(resource: QdnResource): Promise<BoardResource 
       recordCache.set(key, { signature, value: normalized });
     }
 
-    return normalized;
+    return { status: 'loaded', value: normalized };
   } catch {
-    return null;
+    return { status: 'unavailable' };
   }
 }
 
@@ -290,13 +333,68 @@ async function searchPrefix(identifier: string) {
   return [...found.values()];
 }
 
-export async function loadBoard(): Promise<ReducedBoard> {
+export function summarizeBoardDescriptors(resources: readonly QdnResource[]): BoardDescriptorCounts {
+  return resources.reduce<BoardDescriptorCounts>(
+    (counts, resource) => {
+      const identifier = resource.identifier ?? '';
+
+      if (identifier.startsWith(IDENTIFIERS.topic)) counts.topics += 1;
+      if (identifier.startsWith(IDENTIFIERS.thread)) counts.threads += 1;
+      if (identifier.startsWith(IDENTIFIERS.post)) counts.posts += 1;
+      return counts;
+    },
+    { posts: 0, threads: 0, topics: 0 },
+  );
+}
+
+export async function loadBoard(options: BoardLoadOptions = {}): Promise<BoardLoadResult> {
+  options.onProgress?.({
+    descriptorCounts: null,
+    discoveredResourceCount: 0,
+    phase: 'listing',
+    processedResourceCount: 0,
+    unavailableIdentifiers: [],
+    unavailableResourceCount: 0,
+  });
+
   const [resourceGroups, rootAddress] = await Promise.all([
     Promise.all(prefixes.map(searchPrefix)),
     loadRootAddress(),
   ]);
   const resources = resourceGroups.flat();
-  const loaded = await Promise.all(resources.map(fetchBoardResource));
+  const descriptorCounts = summarizeBoardDescriptors(resources);
+  let processedResourceCount = 0;
+  const unavailableIdentifiers: string[] = [];
+  let unavailableResourceCount = 0;
+
+  options.onProgress?.({
+    descriptorCounts,
+    discoveredResourceCount: resources.length,
+    phase: 'fetching',
+    processedResourceCount,
+    unavailableIdentifiers: [],
+    unavailableResourceCount,
+  });
+
+  const outcomes = await Promise.all(
+    resources.map(async (resource) => {
+      const outcome = await fetchBoardResource(resource);
+      processedResourceCount += 1;
+      if (outcome.status === 'unavailable') {
+        unavailableResourceCount += 1;
+        if (resource.identifier) unavailableIdentifiers.push(resource.identifier);
+      }
+      options.onProgress?.({
+        descriptorCounts,
+        discoveredResourceCount: resources.length,
+        phase: 'fetching',
+        processedResourceCount,
+        unavailableIdentifiers: [...unavailableIdentifiers],
+        unavailableResourceCount,
+      });
+      return outcome;
+    }),
+  );
   const liveKeys = new Set(resources.map(cacheKey));
 
   for (const key of recordCache.keys()) {
@@ -305,10 +403,16 @@ export async function loadBoard(): Promise<ReducedBoard> {
     }
   }
 
-  return reduceBoard(
-    loaded.filter((entry): entry is BoardResource => entry !== null),
-    rootAddress,
-  );
+  return {
+    board: reduceBoard(
+      outcomes.flatMap((outcome) => outcome.status === 'loaded' ? [outcome.value] : []),
+      rootAddress,
+    ),
+    descriptorCounts,
+    discoveredResourceCount: resources.length,
+    unavailableIdentifiers,
+    unavailableResourceCount,
+  };
 }
 
 async function loadRootAddress() {

@@ -64,8 +64,8 @@ the rest of the conversation available if that reply can no longer be shown.
 
 ## Versioning
 
-Boards follows the Qortium app versioning standard (QAVS). Version `1.5.2`
-declares a minimum Qortium platform level of 1.5 and the third app release at
+Boards follows the Qortium app versioning standard (QAVS). Version `1.5.3`
+declares a minimum Qortium platform level of 1.5 and the fourth app release at
 that platform level. The build emits `dist/qortium-app.json`.
 
 ## Publishing

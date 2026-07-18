@@ -21,6 +21,8 @@ export type BoardsRoute =
 
 export type NavigationIntent = 'clear-target' | 'published-reply' | 'standard';
 
+export type DiscussionAvailability = 'found' | 'loading' | 'not-found' | 'unavailable';
+
 function resolveLocation(location?: LocationLike): LocationLike {
   if (location) return location;
   return typeof window === 'undefined' ? {} : window.location;
@@ -126,4 +128,14 @@ export function resolvePostTarget<T extends { id: string; threadId: string }>(
     (candidate) => candidate.id === route.postId && candidate.threadId === route.threadId,
   );
   return post ? { kind: 'found', post } : { kind: 'missing' };
+}
+
+export function resolveDiscussionAvailability(
+  isLoading: boolean,
+  hasDiscussion: boolean,
+  targetUnavailable: boolean,
+): DiscussionAvailability {
+  if (isLoading) return 'loading';
+  if (hasDiscussion) return 'found';
+  return targetUnavailable ? 'unavailable' : 'not-found';
 }

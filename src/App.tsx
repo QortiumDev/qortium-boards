@@ -4,6 +4,7 @@ import {
   type AttachmentReference,
   type BoardRecord,
   createBoardId,
+  IDENTIFIERS,
   type ReactionValue,
   type ReducedBoard,
   type ReducedPost,
@@ -32,6 +33,8 @@ import {
   transactionConfirmationTarget,
   voteNativePoll,
   type AccountContext,
+  type BoardDescriptorCounts,
+  type BoardLoadProgress,
   type NativePoll,
   type NativePollVotes,
 } from './boardService';
@@ -44,6 +47,7 @@ import {
 import {
   buildRouteLink,
   readRoute,
+  resolveDiscussionAvailability,
   resolvePostTarget,
   routeUrl,
   shouldReplaceHistory,
@@ -75,6 +79,15 @@ const EMPTY_BOARD: ReducedBoard = {
   posts: [],
   threads: [],
   topics: [],
+};
+
+const EMPTY_LOAD_PROGRESS: BoardLoadProgress = {
+  descriptorCounts: null,
+  discoveredResourceCount: 0,
+  phase: 'listing',
+  processedResourceCount: 0,
+  unavailableIdentifiers: [],
+  unavailableResourceCount: 0,
 };
 
 const reactionLabels: Record<ReactionValue, string> = {
@@ -854,11 +867,14 @@ export function App() {
   const [copiedPostId, setCopiedPostId] = useState<string | null>(null);
   const [searchInput, setSearchInput] = useState(route.kind === 'board' ? route.search : '');
   const [loading, setLoading] = useState(true);
+  const [loadProgress, setLoadProgress] = useState<BoardLoadProgress>(EMPTY_LOAD_PROGRESS);
   const [working, setWorking] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState('');
   const deepLinkRef = useRef<HTMLDivElement | null>(null);
   const copyFeedbackTimerRef = useRef<number | null>(null);
+  const loadSequenceRef = useRef(0);
 
   const canPublish =
     Boolean(selectedName) &&
@@ -897,20 +913,39 @@ export function App() {
   }
 
   async function refreshBoard(quiet = false) {
-    if (!quiet) setLoading(true);
-    setError('');
+    const loadSequence = ++loadSequenceRef.current;
+    if (!quiet) {
+      setLoading(true);
+      setLoadProgress(EMPTY_LOAD_PROGRESS);
+    }
+    setLoadError('');
     try {
-      setBoard(await loadBoard());
+      const result = await loadBoard({
+        onProgress: (progress) => {
+          if (loadSequence === loadSequenceRef.current) setLoadProgress(progress);
+        },
+      });
+      if (loadSequence !== loadSequenceRef.current) return;
+      setBoard(result.board);
+      setLoadProgress({
+        descriptorCounts: result.descriptorCounts,
+        discoveredResourceCount: result.discoveredResourceCount,
+        phase: 'fetching',
+        processedResourceCount: result.discoveredResourceCount,
+        unavailableIdentifiers: result.unavailableIdentifiers,
+        unavailableResourceCount: result.unavailableResourceCount,
+      });
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : String(loadError));
+      if (loadSequence === loadSequenceRef.current) {
+        setLoadError(loadError instanceof Error ? loadError.message : String(loadError));
+      }
     } finally {
-      if (!quiet) setLoading(false);
+      if (!quiet && loadSequence === loadSequenceRef.current) setLoading(false);
     }
   }
 
   async function loadContext() {
-    setLoading(true);
-    setError('');
+    setLoadError('');
     try {
       const [nextBridge, status] = await Promise.all([
         getBridgeState(),
@@ -935,10 +970,9 @@ export function App() {
         }
       }
 
-      await refreshBoard(true);
+      await refreshBoard();
     } catch (contextError) {
-      setError(contextError instanceof Error ? contextError.message : String(contextError));
-    } finally {
+      setLoadError(contextError instanceof Error ? contextError.message : String(contextError));
       setLoading(false);
     }
   }
@@ -1001,6 +1035,36 @@ export function App() {
       ? visibleThreads.find((thread) => thread.id === route.threadId) ?? null
       : null;
   const postTarget = resolvePostTarget(route, visiblePosts);
+  const unavailableIdentifierSet = new Set(loadProgress.unavailableIdentifiers);
+  const topicResourceUnavailable =
+    route.kind === 'topic' &&
+    unavailableIdentifierSet.has(`${IDENTIFIERS.topic}${route.topicId}`);
+  const threadResourceUnavailable =
+    route.kind === 'thread' &&
+    unavailableIdentifierSet.has(`${IDENTIFIERS.thread}${route.threadId}`);
+  const postResourceUnavailable =
+    route.kind === 'thread' &&
+    Boolean(route.postId) &&
+    unavailableIdentifierSet.has(`${IDENTIFIERS.post}${route.postId ?? ''}`);
+  const topicAvailability = resolveDiscussionAvailability(
+    loading,
+    Boolean(currentTopic),
+    topicResourceUnavailable,
+  );
+  const threadAvailability = resolveDiscussionAvailability(
+    loading,
+    Boolean(currentThread && currentTopic),
+    threadResourceUnavailable,
+  );
+
+  function countDisplay(
+    kind: keyof BoardDescriptorCounts,
+    validatedCount: number,
+  ): number | string {
+    if (loadError) return '—';
+    if (!loading) return validatedCount;
+    return loadProgress.descriptorCounts?.[kind] ?? '…';
+  }
 
   useEffect(() => {
     if (loading || postTarget.kind !== 'found') return;
@@ -1263,7 +1327,11 @@ export function App() {
 
       <main className="app-main" id="boards-main">
         <div className="route-announcer" aria-live="polite">
-          {route.kind === 'board'
+          {loadError
+            ? 'Boards discussions unavailable'
+            : loading && (route.kind === 'topic' || route.kind === 'thread')
+            ? 'Loading linked QDN discussion'
+            : route.kind === 'board'
             ? search
               ? `Search results for ${route.search}`
               : 'Boards home'
@@ -1298,9 +1366,21 @@ export function App() {
           </button>
         </div>
 
-        {loading ? <Notice>Loading QDN discussions…</Notice> : null}
+        {loading ? (
+          <Notice>
+            {loadProgress.phase === 'listing' || !loadProgress.descriptorCounts
+              ? 'Finding QDN discussion records…'
+              : `Found ${loadProgress.discoveredResourceCount.toLocaleString()} candidate QDN records. Fetching and validating ${loadProgress.processedResourceCount.toLocaleString()} of ${loadProgress.discoveredResourceCount.toLocaleString()}…`}
+          </Notice>
+        ) : null}
         {message ? <Notice>{message}</Notice> : null}
+        {loadError ? <Notice tone="danger">Boards could not finish loading: {loadError}</Notice> : null}
         {error ? <Notice tone="danger">{error}</Notice> : null}
+        {!loading && !loadError && loadProgress.unavailableResourceCount > 0 ? (
+          <Notice tone="warning">
+            {loadProgress.unavailableResourceCount.toLocaleString()} QDN record{loadProgress.unavailableResourceCount === 1 ? ' is' : 's are'} not available from this node yet. Counts and discussions are incomplete; refresh to try again.
+          </Notice>
+        ) : null}
         {!bridge?.isHomeBridge && !loading ? (
           <Notice tone="warning">
             Browser development is read-only. Open Boards inside Qortium Home to publish,
@@ -1327,13 +1407,13 @@ export function App() {
                 </p>
               </div>
               <div className="hero__stats">
-                <span><strong>{visibleTopics.length}</strong> topics</span>
-                <span><strong>{visibleThreads.length}</strong> threads</span>
-                <span><strong>{visiblePosts.length}</strong> replies</span>
+                <span><strong>{countDisplay('topics', visibleTopics.length)}</strong> {loading ? 'topic records to verify' : loadProgress.unavailableResourceCount ? 'topics so far' : 'topics'}</span>
+                <span><strong>{countDisplay('threads', visibleThreads.length)}</strong> {loading ? 'thread records to verify' : loadProgress.unavailableResourceCount ? 'threads so far' : 'threads'}</span>
+                <span><strong>{countDisplay('posts', visiblePosts.length)}</strong> {loading ? 'reply records to verify' : loadProgress.unavailableResourceCount ? 'replies so far' : 'replies'}</span>
               </div>
             </section>
 
-            {searchResults ? (
+            {!loading && !loadError && (searchResults ? (
               <section className="content-panel">
                 <header className="section-heading">
                   <div>
@@ -1443,12 +1523,12 @@ export function App() {
                   </div>
                 </section>
               </div>
-            )}
+            ))}
           </>
         )}
 
-        {route.kind === 'topic' && (
-          currentTopic ? (
+        {route.kind === 'topic' && !loadError && (
+          topicAvailability === 'found' && currentTopic ? (
             <section>
               <Breadcrumbs
                 items={[
@@ -1556,11 +1636,19 @@ export function App() {
                 </aside>
               </div>
             </section>
-          ) : <NotFound onHome={() => navigate({ kind: 'board', search: '' })} />
+          ) : topicAvailability === 'unavailable' ? (
+            <DiscussionUnavailable
+              label="topic"
+              onHome={() => navigate({ kind: 'board', search: '' })}
+              onRetry={() => void refreshBoard()}
+            />
+          ) : topicAvailability === 'not-found' ? (
+            <NotFound onHome={() => navigate({ kind: 'board', search: '' })} />
+          ) : null
         )}
 
-        {route.kind === 'thread' && (
-          currentThread && currentTopic ? (
+        {route.kind === 'thread' && !loadError && (
+          threadAvailability === 'found' && currentThread && currentTopic ? (
             <section>
               <Breadcrumbs
                 items={[
@@ -1657,8 +1745,9 @@ export function App() {
                     {postTarget.kind === 'missing' ? (
                       <Notice tone="warning">
                         <span>
-                          This linked reply is unavailable, deleted, hidden, or belongs to a
-                          different thread. The rest of the conversation is still available.
+                          {postResourceUnavailable
+                            ? 'This linked reply is still being fetched from QDN. The rest of the conversation is already available.'
+                            : 'This linked reply is deleted, hidden, or belongs to a different thread. The rest of the conversation is still available.'}
                         </span>{' '}
                         <button
                           className="link-button"
@@ -1827,7 +1916,15 @@ export function App() {
                 </aside>
               </div>
             </section>
-          ) : <NotFound onHome={() => navigate({ kind: 'board', search: '' })} />
+          ) : threadAvailability === 'unavailable' ? (
+            <DiscussionUnavailable
+              label="thread"
+              onHome={() => navigate({ kind: 'board', search: '' })}
+              onRetry={() => void refreshBoard()}
+            />
+          ) : threadAvailability === 'not-found' ? (
+            <NotFound onHome={() => navigate({ kind: 'board', search: '' })} />
+          ) : null
         )}
       </main>
 
@@ -1910,8 +2007,33 @@ function NotFound({ onHome }: { onHome: () => void }) {
     <div className="empty-state empty-state--page">
       <span className="empty-state__mark">?</span>
       <h1>Discussion not found</h1>
-      <p>The record may still be propagating, hidden, deleted, or unavailable from this node.</p>
+      <p>No visible discussion matches this link. It may have been hidden or deleted.</p>
       <button className="button button--primary" onClick={onHome} type="button">Back to Boards</button>
+    </div>
+  );
+}
+
+function DiscussionUnavailable({
+  label,
+  onHome,
+  onRetry,
+}: {
+  label: 'thread' | 'topic';
+  onHome: () => void;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="empty-state empty-state--page">
+      <span className="empty-state__mark">↻</span>
+      <h1>Still fetching this {label}</h1>
+      <p>
+        The node found Boards records that are not available from QDN yet, so this link has
+        not been declared missing.
+      </p>
+      <div>
+        <button className="button button--primary" onClick={onRetry} type="button">Try again</button>{' '}
+        <button className="button button--quiet" onClick={onHome} type="button">Back to Boards</button>
+      </div>
     </div>
   );
 }

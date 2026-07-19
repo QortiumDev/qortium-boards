@@ -61,11 +61,13 @@ The app derives the QDN identity from Core's injected render globals, so links
 copied from a mirror keep that mirror's service, name, and identifier. A reply
 link opens its thread, focuses and highlights the requested reply, and leaves
 the rest of the conversation available if that reply can no longer be shown.
+In-app route changes preserve Home's bridge and display parameters as well as
+the current URL fragment.
 
 ## Versioning
 
-Boards follows the Qortium app versioning standard (QAVS). Version `1.5.3`
-declares a minimum Qortium platform level of 1.5 and the fourth app release at
+Boards follows the Qortium app versioning standard (QAVS). Version `1.5.4`
+declares a minimum Qortium platform level of 1.5 and the fifth app release at
 that platform level. The build emits `dist/qortium-app.json`.
 
 ## Publishing

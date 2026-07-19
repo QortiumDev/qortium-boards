@@ -44,6 +44,37 @@ describe('Boards deep links', () => {
     expect(readRoute(path.slice(path.indexOf('?')))).toEqual(route);
   });
 
+  it('preserves host query parameters and the fragment while replacing Boards route keys', () => {
+    expect(
+      routeUrl(
+        { kind: 'thread', postId: 'post-2', threadId: 'thread-1' },
+        {
+          hash: '#focused-reply',
+          pathname: '/render/APP/Boards/Boards',
+          search:
+            '?theme=dark&qdnHomeBridge=bridge-token&thread=old&post=old&topic=old&view=developers&search=old&lang=fr',
+        },
+      ),
+    ).toBe(
+      '/render/APP/Boards/Boards?theme=dark&qdnHomeBridge=bridge-token&lang=fr&thread=thread-1&post=post-2#focused-reply',
+    );
+  });
+
+  it('removes stale Boards keys without disturbing repeated host parameters', () => {
+    expect(
+      routeUrl(
+        { kind: 'board', search: '' },
+        {
+          hash: '#app-shell',
+          pathname: '/render/APP/Boards/Boards',
+          search: '?topic=old&accent=blue&accent=green&uiStyle=modern',
+        },
+      ),
+    ).toBe(
+      '/render/APP/Boards/Boards?accent=blue&accent=green&uiStyle=modern#app-shell',
+    );
+  });
+
   it('prefers Core-injected identity when building a mirror-safe link', () => {
     const host = {
       _qdnIdentifier: 'boards.mirror.v1',

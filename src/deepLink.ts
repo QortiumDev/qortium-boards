@@ -3,6 +3,7 @@ const DEFAULT_NAME = 'Boards';
 const DEFAULT_IDENTIFIER = 'Boards';
 
 type LocationLike = {
+  hash?: string;
   pathname?: string;
   search?: string;
 };
@@ -22,6 +23,8 @@ export type BoardsRoute =
 export type NavigationIntent = 'clear-target' | 'published-reply' | 'standard';
 
 export type DiscussionAvailability = 'found' | 'loading' | 'not-found' | 'unavailable';
+
+const ROUTE_QUERY_KEYS = ['topic', 'thread', 'post', 'view', 'search'] as const;
 
 function resolveLocation(location?: LocationLike): LocationLike {
   if (location) return location;
@@ -47,8 +50,8 @@ function decodeSegment(value: string | undefined): string {
   }
 }
 
-function routeQuery(route: BoardsRoute): string {
-  const query = new URLSearchParams();
+function applyRouteQuery(query: URLSearchParams, route: BoardsRoute): void {
+  for (const key of ROUTE_QUERY_KEYS) query.delete(key);
 
   if (route.kind === 'topic') query.set('topic', route.topicId);
   if (route.kind === 'thread') {
@@ -57,6 +60,11 @@ function routeQuery(route: BoardsRoute): string {
   }
   if (route.kind === 'developers') query.set('view', 'developers');
   if (route.kind === 'board' && route.search) query.set('search', route.search);
+}
+
+function routeQuery(route: BoardsRoute): string {
+  const query = new URLSearchParams();
+  applyRouteQuery(query, route);
 
   return query.toString();
 }
@@ -83,9 +91,13 @@ export function readRoute(search?: string): BoardsRoute {
 }
 
 export function routeUrl(route: BoardsRoute, location?: LocationLike): string {
-  const pathname = resolveLocation(location).pathname || '/';
-  const query = routeQuery(route);
-  return `${pathname}${query ? `?${query}` : ''}`;
+  const resolvedLocation = resolveLocation(location);
+  const pathname = resolvedLocation.pathname || '/';
+  const query = new URLSearchParams(resolvedLocation.search ?? '');
+  applyRouteQuery(query, route);
+  const serializedQuery = query.toString();
+
+  return `${pathname}${serializedQuery ? `?${serializedQuery}` : ''}${resolvedLocation.hash ?? ''}`;
 }
 
 export function getAppBaseAddress(location?: LocationLike, host?: QdnHostGlobals): string {

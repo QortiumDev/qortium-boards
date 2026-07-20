@@ -1,6 +1,6 @@
 {
   "name": "qortium-boards",
-  "version": "1.5.4",
+  "version": "1.5.5",
   "private": true,
   "license": "0BSD",
   "description": "A QDN discussion board for Qortium communities.",

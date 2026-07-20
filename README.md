@@ -66,8 +66,8 @@ the current URL fragment.
 
 ## Versioning
 
-Boards follows the Qortium app versioning standard (QAVS). Version `1.5.4`
-declares a minimum Qortium platform level of 1.5 and the fifth app release at
+Boards follows the Qortium app versioning standard (QAVS). Version `1.5.5`
+declares a minimum Qortium platform level of 1.5 and the sixth app release at
 that platform level. The build emits `dist/qortium-app.json`.
 
 ## Publishing

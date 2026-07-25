@@ -39,6 +39,7 @@ import type {
 
 const MAX_RECORD_BYTES = 25_000;
 const MAX_PUBLISH_BYTES = 24_000;
+export const MAX_INLINE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const PAGE_SIZE = 100;
 const MAX_PAGES_PER_PREFIX = 30;
 
@@ -118,6 +119,10 @@ function bytesToBase64(bytes: Uint8Array) {
 
 function jsonToBase64(value: unknown) {
   return bytesToBase64(new TextEncoder().encode(JSON.stringify(value, null, 2)));
+}
+
+async function fileToBase64(file: Blob) {
+  return bytesToBase64(new Uint8Array(await file.arrayBuffer()));
 }
 
 function responseData<T>(value: unknown): T {
@@ -723,6 +728,47 @@ export async function selectAndPublishAttachmentWithResult(
     name,
     service: 'ATTACHMENT',
     size: selected.size,
+  };
+
+  return {
+    attachment,
+    confirmationTarget: {
+      identifier,
+      name,
+      service: 'ATTACHMENT',
+      type: 'qdn-resource',
+    },
+    publishResult,
+  };
+}
+
+export async function publishAttachmentFileWithResult(
+  name: string,
+  file: File,
+): Promise<PublishedAttachment> {
+  if (file.size > MAX_INLINE_ATTACHMENT_BYTES) {
+    throw new Error(`Pasted and dropped files must be ${Math.round(MAX_INLINE_ATTACHMENT_BYTES / 1024 / 1024)} MB or smaller.`);
+  }
+
+  const id = createBoardId();
+  const identifier = `qboards.v1.a.${id}`;
+  const filename = file.name.trim() || 'attachment';
+  const publishResult = await qdnRequest<PublishActionResult>({
+    action: 'PUBLISH_QDN_RESOURCE',
+    base64: await fileToBase64(file),
+    filename,
+    identifier,
+    name,
+    service: 'ATTACHMENT',
+    title: filename.slice(0, 80),
+  });
+
+  const attachment: AttachmentReference = {
+    filename,
+    identifier,
+    name,
+    service: 'ATTACHMENT',
+    size: file.size,
   };
 
   return {

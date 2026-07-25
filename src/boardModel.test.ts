@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   BOARD_SCHEMA,
+  MAX_ATTACHMENT_COUNT,
+  normalizeBoardRecord,
   reduceBoard,
   type BoardResource,
   type BoardRecord,
@@ -29,6 +31,29 @@ function resource(
 }
 
 describe('reduceBoard', () => {
+  it('caps attachment references at the documented per-record limit', () => {
+    const attachments = Array.from({ length: MAX_ATTACHMENT_COUNT + 1 }, (_, index) => ({
+      filename: `file-${index}.txt`,
+      identifier: `attachment-${index}`,
+      name: 'Alice',
+      service: 'ATTACHMENT',
+    }));
+
+    const record = normalizeBoardRecord({
+      attachments,
+      body: 'Body',
+      createdAt: 1,
+      id: 'thread-1',
+      kind: 'thread',
+      schema: BOARD_SCHEMA,
+      title: 'Thread',
+      topicId: 'topic-1',
+    });
+
+    expect(record).toMatchObject({ kind: 'thread' });
+    expect(record && record.kind === 'thread' ? record.attachments : []).toHaveLength(MAX_ATTACHMENT_COUNT);
+  });
+
   it('binds content edits to the original QDN publisher', () => {
     const topic = resource('Alice', {
       createdAt: 1,

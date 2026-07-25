@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BOARD_SCHEMA, IDENTIFIERS, type TipRecord } from './boardModel';
 import {
   loadBoard,
+  MAX_INLINE_ATTACHMENT_BYTES,
+  publishAttachmentFileWithResult,
   recordConfirmationTarget,
   publishTipReceipt,
   selectAndPublishAttachmentWithResult,
@@ -376,5 +378,66 @@ describe('board write confirmation descriptors', () => {
     expect(result.publishResult.transactionSignature).toBe('receipt-signature');
     expect(result.publishConfirmationTarget.identifier).toMatch(/^qboards\.v1\.tip\./);
     expect(bridge).toHaveBeenCalledTimes(2);
+  });
+
+  it('publishes a pasted or dropped file inline and exposes its confirmation tuple', async () => {
+    const publishResult = {
+      accepted: true,
+      action: 'PUBLISH_QDN_RESOURCE' as const,
+      resource: {
+        identifier: 'ignored-host-identifier',
+        name: 'Alice',
+        service: 'ATTACHMENT',
+      },
+      transactionSignature: 'attachment-signature',
+    };
+    const bridge = vi.fn().mockResolvedValue(publishResult);
+    const bytes = new Uint8Array([1, 2, 3]);
+    const file = {
+      arrayBuffer: async () => bytes.buffer,
+      name: 'clipboard.png',
+      size: bytes.byteLength,
+    } as File;
+    vi.stubGlobal('window', { qdnRequest: bridge });
+
+    const published = await publishAttachmentFileWithResult('Alice', file);
+
+    expect(published).toMatchObject({
+      attachment: {
+        filename: 'clipboard.png',
+        name: 'Alice',
+        service: 'ATTACHMENT',
+        size: 3,
+      },
+      confirmationTarget: {
+        name: 'Alice',
+        service: 'ATTACHMENT',
+        type: 'qdn-resource',
+      },
+      publishResult,
+    });
+    expect(published.attachment.identifier).toBe(published.confirmationTarget.identifier);
+    expect(bridge).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'PUBLISH_QDN_RESOURCE',
+        base64: 'AQID',
+        filename: 'clipboard.png',
+        name: 'Alice',
+        service: 'ATTACHMENT',
+      }),
+    );
+  });
+
+  it('rejects an inline file above the renderer-safe limit before requesting approval', async () => {
+    const bridge = vi.fn();
+    const file = {
+      arrayBuffer: async () => new ArrayBuffer(0),
+      name: 'large.bin',
+      size: MAX_INLINE_ATTACHMENT_BYTES + 1,
+    } as File;
+    vi.stubGlobal('window', { qdnRequest: bridge });
+
+    await expect(publishAttachmentFileWithResult('Alice', file)).rejects.toThrow('10 MB or smaller');
+    expect(bridge).not.toHaveBeenCalled();
   });
 });

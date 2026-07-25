@@ -17,6 +17,7 @@ export const IDENTIFIERS = {
 } as const;
 
 export const REACTION_VALUES = ['like', 'insightful', 'agree', 'laugh', 'support'] as const;
+export const MAX_ATTACHMENT_COUNT = 8;
 export type ReactionValue = (typeof REACTION_VALUES)[number];
 
 export type AttachmentReference = {
@@ -223,7 +224,7 @@ function normalizeAttachments(value: unknown): AttachmentReference[] {
       };
     })
     .filter((item): item is AttachmentReference => item !== null)
-    .slice(0, 8);
+    .slice(0, MAX_ATTACHMENT_COUNT);
 }
 
 function parseBase(value: Record<string, unknown>) {

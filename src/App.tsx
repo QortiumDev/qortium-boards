@@ -1,6 +1,7 @@
-import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { ClipboardEvent, DragEvent, FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import {
   REACTION_VALUES,
+  MAX_ATTACHMENT_COUNT,
   type AttachmentReference,
   type BoardRecord,
   createBoardId,
@@ -13,6 +14,7 @@ import {
   type TipRecord,
 } from './boardModel';
 import { copyTextToClipboard } from './clipboard';
+import { getTransferFiles } from './attachmentInput';
 import {
   createEdit,
   createModeration,
@@ -27,6 +29,7 @@ import {
   publishTipReceipt,
   publishNativePoll,
   publishRecord,
+  publishAttachmentFileWithResult,
   recordConfirmationTarget,
   selectAndPublishAttachmentWithResult,
   sendTipPayment,
@@ -440,6 +443,7 @@ function ComposerModal({
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [messageTone, setMessageTone] = useState<'danger' | 'info' | 'success'>('info');
+  const canAddAttachments = canAttach && isThread;
 
   function setStatus(nextMessage: string) {
     setMessageTone('info');
@@ -466,12 +470,30 @@ function ComposerModal({
     onClose();
   }
 
-  async function addAttachment() {
+  async function addAttachments(files?: File[]) {
+    const remaining = MAX_ATTACHMENT_COUNT - attachments.length;
+
+    if (remaining < 1) {
+      setMessageTone('danger');
+      setMessage(`Boards allows up to ${MAX_ATTACHMENT_COUNT} attachments per discussion.`);
+      return;
+    }
+
+    const queuedFiles = files?.slice(0, remaining);
     setBusy(true);
-    setStatus('Select a file to publish through Qortium Home…');
+    setStatus(queuedFiles?.length ? `Publishing ${queuedFiles.length} dropped or pasted file${queuedFiles.length === 1 ? '' : 's'} through Qortium Home…` : 'Select a file to publish through Qortium Home…');
     try {
-      const published = await selectAndPublishAttachmentWithResult(name);
-      if (published) {
+      let added = 0;
+
+      for (const file of queuedFiles?.length ? queuedFiles : [null]) {
+        const published = file
+          ? await publishAttachmentFileWithResult(name, file)
+          : await selectAndPublishAttachmentWithResult(name);
+
+        if (!published) {
+          break;
+        }
+
         await confirmQdnPublication(
           published.publishResult,
           published.confirmationTarget,
@@ -479,8 +501,12 @@ function ComposerModal({
           setStatus,
         );
         setAttachments((current) => [...current, published.attachment]);
+        added += 1;
+      }
+
+      if (added > 0) {
         setMessageTone('success');
-        setMessage('Attachment confirmed and ready to include.');
+        setMessage(`${added} attachment${added === 1 ? '' : 's'} confirmed and ready to include.${files && files.length > queuedFiles!.length ? ` Boards allows up to ${MAX_ATTACHMENT_COUNT} attachments.` : ''}`);
       } else {
         setMessage('');
       }
@@ -490,6 +516,34 @@ function ComposerModal({
     } finally {
       setBusy(false);
     }
+  }
+
+  function handleAttachmentPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    if (!canAddAttachments || busy) return;
+
+    const files = getTransferFiles(event.clipboardData);
+
+    if (!files.length) return;
+    event.preventDefault();
+    void addAttachments(files);
+  }
+
+  function handleAttachmentDragOver(event: DragEvent<HTMLFormElement>) {
+    if (!canAddAttachments || busy) return;
+
+    if (getTransferFiles(event.dataTransfer).length || Array.from(event.dataTransfer.types).includes('Files')) {
+      event.preventDefault();
+    }
+  }
+
+  function handleAttachmentDrop(event: DragEvent<HTMLFormElement>) {
+    if (!canAddAttachments || busy) return;
+
+    const files = getTransferFiles(event.dataTransfer);
+
+    if (!files.length) return;
+    event.preventDefault();
+    void addAttachments(files);
   }
 
   async function submit(event: FormEvent) {
@@ -588,7 +642,7 @@ function ComposerModal({
             Close
           </button>
         </header>
-        <form className="composer-form" onSubmit={submit}>
+        <form className="composer-form" onDragOver={handleAttachmentDragOver} onDrop={handleAttachmentDrop} onSubmit={submit}>
           {(isTopic || isThread) && (
             <label>
               <span>Title</span>
@@ -605,6 +659,7 @@ function ComposerModal({
             <textarea
               maxLength={24_000}
               onChange={(event) => setBody(event.target.value)}
+              onPaste={handleAttachmentPaste}
               required
               rows={isTopic ? 5 : 12}
               value={body}
@@ -624,13 +679,13 @@ function ComposerModal({
           )}
           {composer.kind === 'thread' && (
             <>
-              {canAttach ? (
+              {canAddAttachments ? (
                 <div className="form-section">
                   <div>
                     <strong>Attachments</strong>
-                    <small>Selected files publish and confirm before this thread can reference them.</small>
+                    <small>Paste or drop files here, or select one. Each publishes and confirms before this thread can reference it.</small>
                   </div>
-                  <button className="button button--secondary" disabled={busy} onClick={addAttachment} type="button">
+                  <button className="button button--secondary" disabled={busy} onClick={() => void addAttachments()} type="button">
                     Add file
                   </button>
                 </div>
@@ -1181,14 +1236,31 @@ export function App() {
     }
   }
 
-  async function addReplyAttachment() {
+  async function addReplyAttachments(files?: File[]) {
     if (!canAttach) return;
+    const remaining = MAX_ATTACHMENT_COUNT - replyAttachments.length;
+
+    if (remaining < 1) {
+      setError(`Boards allows up to ${MAX_ATTACHMENT_COUNT} attachments per discussion.`);
+      return;
+    }
+
+    const queuedFiles = files?.slice(0, remaining);
     setWorking(true);
     setError('');
     try {
-      setMessage('Select a file to publish through Qortium Home…');
-      const published = await selectAndPublishAttachmentWithResult(selectedName);
-      if (published) {
+      setMessage(queuedFiles?.length ? `Publishing ${queuedFiles.length} dropped or pasted file${queuedFiles.length === 1 ? '' : 's'} through Qortium Home…` : 'Select a file to publish through Qortium Home…');
+      let added = 0;
+
+      for (const file of queuedFiles?.length ? queuedFiles : [null]) {
+        const published = file
+          ? await publishAttachmentFileWithResult(selectedName, file)
+          : await selectAndPublishAttachmentWithResult(selectedName);
+
+        if (!published) {
+          break;
+        }
+
         await confirmQdnPublication(
           published.publishResult,
           published.confirmationTarget,
@@ -1196,7 +1268,11 @@ export function App() {
           setMessage,
         );
         setReplyAttachments((current) => [...current, published.attachment]);
-        setMessage('Attachment confirmed and ready to include.');
+        added += 1;
+      }
+
+      if (added > 0) {
+        setMessage(`${added} attachment${added === 1 ? '' : 's'} confirmed and ready to include.${files && files.length > queuedFiles!.length ? ` Boards allows up to ${MAX_ATTACHMENT_COUNT} attachments.` : ''}`);
       } else {
         setMessage('');
       }
@@ -1207,6 +1283,34 @@ export function App() {
     } finally {
       setWorking(false);
     }
+  }
+
+  function handleReplyAttachmentPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    if (!canAttach || working) return;
+
+    const files = getTransferFiles(event.clipboardData);
+
+    if (!files.length) return;
+    event.preventDefault();
+    void addReplyAttachments(files);
+  }
+
+  function handleReplyAttachmentDragOver(event: DragEvent<HTMLFormElement>) {
+    if (!canAttach || working) return;
+
+    if (getTransferFiles(event.dataTransfer).length || Array.from(event.dataTransfer.types).includes('Files')) {
+      event.preventDefault();
+    }
+  }
+
+  function handleReplyAttachmentDrop(event: DragEvent<HTMLFormElement>) {
+    if (!canAttach || working) return;
+
+    const files = getTransferFiles(event.dataTransfer);
+
+    if (!files.length) return;
+    event.preventDefault();
+    void addReplyAttachments(files);
   }
 
   async function share(routeToShare: Route, postId?: string) {
@@ -1860,7 +1964,7 @@ export function App() {
                   </section>
 
                   {canPublish && !currentThread.locked ? (
-                    <form className="reply-composer" onSubmit={submitReply}>
+                    <form className="reply-composer" onDragOver={handleReplyAttachmentDragOver} onDrop={handleReplyAttachmentDrop} onSubmit={submitReply}>
                       <header>
                         <div>
                           <span className="eyebrow">Publish as {selectedName}</span>
@@ -1875,6 +1979,7 @@ export function App() {
                       <textarea
                         maxLength={24_000}
                         onChange={(event) => setReplyBody(event.target.value)}
+                        onPaste={handleReplyAttachmentPaste}
                         placeholder="Write a thoughtful public reply…"
                         required
                         rows={8}
@@ -1885,7 +1990,7 @@ export function App() {
                         <span>Public QDN JSON · safe link rendering</span>
                         <div>
                           {canAttach ? (
-                            <button className="button button--secondary" disabled={working} onClick={addReplyAttachment} type="button">
+                            <button className="button button--secondary" disabled={working} onClick={() => void addReplyAttachments()} type="button">
                               Add file
                             </button>
                           ) : null}

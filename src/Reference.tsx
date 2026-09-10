@@ -1,13 +1,32 @@
 import { useState } from 'react';
 import {
+  ATTACHMENT_IDENTIFIER_PREFIX,
   BOARD_FILE_NAME,
   BOARD_ROOT_NAME,
   BOARD_SCHEMA,
   BOARD_SERVICE,
   IDENTIFIERS,
+  MAX_IDENTIFIER_BYTES,
   REACTION_VALUES,
 } from './boardModel';
+import {
+  MAX_PAGES_PER_PREFIX,
+  MAX_PUBLISH_BYTES,
+  MAX_RECORD_BYTES,
+  MAX_TRANSACTION_BYTES,
+  PAGE_SIZE,
+  TIP_AMOUNT_TOLERANCE,
+} from './boardService';
 import { copyTextToClipboard } from './clipboard';
+import { ReferenceNavigation } from './ReferenceNavigation';
+
+/** The reference is always English, so numbers are formatted for en-US regardless of Home's language. */
+function formatCount(value: number) {
+  return value.toLocaleString('en-US');
+}
+
+/** Renders the tolerance exactly as the implementation compares it (eight decimal places). */
+export const TIP_AMOUNT_TOLERANCE_TEXT = TIP_AMOUNT_TOLERANCE.toFixed(8);
 
 const IDENTIFIER_ROWS = [
   ['Configuration', IDENTIFIERS.config, 'One logical configuration resource per publisher name. Only a record from the root authority address is accepted.'],
@@ -18,7 +37,7 @@ const IDENTIFIER_ROWS = [
   ['Reaction', `${IDENTIFIERS.reaction}{targetId}`, 'A publisher name updates one resource tuple per target; reduction then keeps the latest confirmed reaction per creator address.'],
   ['Moderation', `${IDENTIFIERS.moderation}{id}`, 'Adds a staff action such as hide, lock, pin or solve.'],
   ['Tip receipt', `${IDENTIFIERS.tip}{id}`, 'Links a confirmed PAYMENT transaction to a thread or post.'],
-  ['Attachment', 'qboards.v1.a.{id}', 'Stores a selected file separately with the ATTACHMENT service.'],
+  ['Attachment', `${ATTACHMENT_IDENTIFIER_PREFIX}{id}`, 'Stores a selected file separately with the ATTACHMENT service.'],
 ] as const;
 
 export const BOARD_REFERENCE_EXAMPLES = {
@@ -64,7 +83,7 @@ await qdnRequest({
   verifyResource: `const tx = await qdnRequest({
   action: 'FETCH_NODE_API',
   path: '/transactions/signature/' + resource.latestSignature,
-  maxBytes: 150_000,
+  maxBytes: ${MAX_TRANSACTION_BYTES},
 });
 
 const authentic =
@@ -86,7 +105,7 @@ if (!selected.canceled) {
     action: 'PUBLISH_QDN_RESOURCE',
     service: 'ATTACHMENT',
     name: selectedWritableName,
-    identifier: 'qboards.v1.a.' + attachmentId,
+    identifier: '${ATTACHMENT_IDENTIFIER_PREFIX}' + attachmentId,
     sourceToken: selected.sourceToken,
     title: selected.fileName.slice(0, 80),
   });
@@ -115,31 +134,42 @@ type CodeExampleProps = {
   label: string;
 };
 
-function CodeExample({ code, id, label }: CodeExampleProps) {
-  const [copyState, setCopyState] = useState<'copied' | 'idle' | 'unavailable'>('idle');
+export type CopyState = 'copied' | 'idle' | 'unavailable';
 
-  async function copy() {
+export function copyStatusMessage(state: CopyState, label: string): string {
+  if (state === 'copied') return `Copied ${label}.`;
+  if (state === 'unavailable') return 'Clipboard unavailable. Select the code and copy it manually.';
+  return 'Code can be selected for manual copying.';
+}
+
+function CodeExample({ code, id, label }: CodeExampleProps) {
+  const [copyState, setCopyState] = useState<CopyState>('idle');
+
+  async function copy(button: HTMLButtonElement) {
     setCopyState(await copyTextToClipboard(code) ? 'copied' : 'unavailable');
+    // The clipboard fallback moves focus to a temporary textarea; keep it on the control.
+    button.focus({ preventScroll: true });
   }
 
   return (
     <div className="reference-code" id={`reference-example-${id}`}>
       <header>
         <strong>{label}</strong>
-        <button className="button button--quiet" onClick={() => void copy()} type="button">
+        <button
+          aria-label={`Copy ${label}`}
+          className="button button--quiet reference-code__copy"
+          onClick={(event) => void copy(event.currentTarget)}
+          type="button"
+        >
           {copyState === 'copied' ? 'Copied' : 'Copy'}
         </button>
       </header>
+      <p aria-live="polite" className="reference-copy-status" role="status">
+        {copyStatusMessage(copyState, label)}
+      </p>
       <pre>
         <code>{code}</code>
       </pre>
-      <span aria-live="polite" className="sr-only">
-        {copyState === 'copied'
-          ? `${label} copied.`
-          : copyState === 'unavailable'
-            ? 'Clipboard access is unavailable. Select the code manually.'
-            : ''}
-      </span>
     </div>
   );
 }
@@ -150,7 +180,7 @@ export type BoardsReferenceProps = {
 
 export function BoardsReference({ onBack }: BoardsReferenceProps) {
   return (
-    <article className="developer-reference">
+    <article className="developer-reference" dir="ltr" lang="en">
       <header className="reference-hero">
         <div>
           <span className="eyebrow">Always-English protocol reference</span>
@@ -158,6 +188,10 @@ export function BoardsReference({ onBack }: BoardsReferenceProps) {
           <p>
             The source and confirmed Qortium transactions are authoritative. This page
             describes the current Boards v1 storage, validation and reduction contracts.
+          </p>
+          <p className="reference-note">
+            This page intentionally stays in English so schema names, action names and
+            examples are identical for every developer, whatever language Home selects.
           </p>
         </div>
         {onBack ? (
@@ -167,17 +201,9 @@ export function BoardsReference({ onBack }: BoardsReferenceProps) {
         ) : null}
       </header>
 
-      <nav aria-label="Developer reference sections" className="reference-toc">
-        <a href="#reference-records">Records</a>
-        <a href="#reference-identifiers">Identifiers</a>
-        <a href="#reference-authenticity">Authenticity</a>
-        <a href="#reference-state">State reduction</a>
-        <a href="#reference-links">Direct links</a>
-        <a href="#reference-features">Polls, files and tips</a>
-        <a href="#reference-bridge">Bridge examples</a>
-      </nav>
+      <ReferenceNavigation />
 
-      <section className="reference-section" id="reference-records">
+      <section className="reference-section" id="reference-records" tabIndex={-1}>
         <header>
           <span className="eyebrow">Data contract</span>
           <h2>Records and QDN storage</h2>
@@ -193,8 +219,9 @@ export function BoardsReference({ onBack }: BoardsReferenceProps) {
             </p>
             <p>
               Board JSON uses service <code>{BOARD_SERVICE}</code>, filename{' '}
-              <code>{BOARD_FILE_NAME}</code>, and an app-side publish ceiling of 24,000
-              UTF-8 bytes. Readers fetch at most 25,000 bytes per record.
+              <code>{BOARD_FILE_NAME}</code>, and an app-side publish ceiling of{' '}
+              {formatCount(MAX_PUBLISH_BYTES)} UTF-8 bytes. Readers fetch at most{' '}
+              {formatCount(MAX_RECORD_BYTES)} bytes per record.
             </p>
           </article>
           <article className="reference-card">
@@ -225,7 +252,7 @@ export function BoardsReference({ onBack }: BoardsReferenceProps) {
         </div>
       </section>
 
-      <section className="reference-section" id="reference-identifiers">
+      <section className="reference-section" id="reference-identifiers" tabIndex={-1}>
         <header>
           <span className="eyebrow">Resource tuples</span>
           <h2>Identifiers</h2>
@@ -253,7 +280,7 @@ export function BoardsReference({ onBack }: BoardsReferenceProps) {
           </div>
         </div>
         <aside className="reference-callout">
-          <strong>QDN identifiers are limited to 64 bytes.</strong>
+          <strong>QDN identifiers are limited to {MAX_IDENTIFIER_BYTES} bytes.</strong>
           <p>
             Boards identifiers are ASCII. The current builder rejects overlong generated
             topic, thread, post, edit, moderation and tip identifiers; app-generated ids
@@ -262,7 +289,7 @@ export function BoardsReference({ onBack }: BoardsReferenceProps) {
         </aside>
       </section>
 
-      <section className="reference-section" id="reference-authenticity">
+      <section className="reference-section" id="reference-authenticity" tabIndex={-1}>
         <header>
           <span className="eyebrow">Trust boundary</span>
           <h2>Confirmed transaction validation</h2>
@@ -303,7 +330,7 @@ export function BoardsReference({ onBack }: BoardsReferenceProps) {
         />
       </section>
 
-      <section className="reference-section" id="reference-state">
+      <section className="reference-section" id="reference-state" tabIndex={-1}>
         <header>
           <span className="eyebrow">Deterministic view</span>
           <h2>Ordering, edits, reactions and moderation</h2>
@@ -344,7 +371,7 @@ export function BoardsReference({ onBack }: BoardsReferenceProps) {
         </div>
       </section>
 
-      <section className="reference-section" id="reference-links">
+      <section className="reference-section" id="reference-links" tabIndex={-1}>
         <header>
           <span className="eyebrow">Addressing</span>
           <h2>Topic, thread and reply links</h2>
@@ -378,7 +405,7 @@ export function BoardsReference({ onBack }: BoardsReferenceProps) {
         </div>
       </section>
 
-      <section className="reference-section" id="reference-features">
+      <section className="reference-section" id="reference-features" tabIndex={-1}>
         <header>
           <span className="eyebrow">Related transactions</span>
           <h2>Native polls, attachments and tips</h2>
@@ -413,7 +440,7 @@ export function BoardsReference({ onBack }: BoardsReferenceProps) {
               <code>SEND_COIN</code> returns a transaction signature. Before counting the
               receipt, Boards requires a confirmed <code>PAYMENT</code> whose creator is the
               receipt publisher, whose recipient matches the record, and whose QORT amount
-              matches within 0.00000001.
+              matches within {TIP_AMOUNT_TOLERANCE_TEXT}.
             </p>
           </article>
           <aside className="reference-callout">
@@ -439,7 +466,7 @@ export function BoardsReference({ onBack }: BoardsReferenceProps) {
         </div>
       </section>
 
-      <section className="reference-section" id="reference-bridge">
+      <section className="reference-section" id="reference-bridge" tabIndex={-1}>
         <header>
           <span className="eyebrow">Qortium Home bridge</span>
           <h2>Feature detection and publication</h2>
@@ -462,8 +489,9 @@ export function BoardsReference({ onBack }: BoardsReferenceProps) {
             <h3>Read discovery</h3>
             <p>
               Boards searches each v1 identifier prefix with service{' '}
-              <code>{BOARD_SERVICE}</code>, newest listings first, in pages of 100. It
-              currently examines at most 30 pages per prefix before authenticating the
+              <code>{BOARD_SERVICE}</code>, newest listings first, in pages of{' '}
+              {formatCount(PAGE_SIZE)}. It currently examines at most{' '}
+              {formatCount(MAX_PAGES_PER_PREFIX)} pages per prefix before authenticating the
               returned resources.
             </p>
           </article>

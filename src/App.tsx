@@ -41,9 +41,10 @@ import {
   type NativePoll,
   type NativePollVotes,
 } from './boardService';
+import { scrollWithinApp } from './appScroll';
 import {
   applyDisplaySettings,
-  getDisplaySettingsUpdateFromMessage,
+  createDisplaySettingsMessageListener,
   getInitialDisplaySettings,
   type QdnDisplaySettings,
 } from './displaySettings';
@@ -1037,10 +1038,8 @@ export function App() {
   }, [settings]);
 
   useEffect(() => {
-    const onMessage = (event: MessageEvent) => {
-      const next = getDisplaySettingsUpdateFromMessage(event.data, settings);
-      if (next) setSettings(next);
-    };
+    // Functional setter: rapid partial updates from Home never read a stale closure.
+    const onMessage = createDisplaySettingsMessageListener(setSettings);
     const onPopState = () => setRoute(readRoute());
     window.addEventListener('message', onMessage);
     window.addEventListener('popstate', onPopState);
@@ -1048,7 +1047,7 @@ export function App() {
       window.removeEventListener('message', onMessage);
       window.removeEventListener('popstate', onPopState);
     };
-  }, [settings]);
+  }, []);
 
   useEffect(() => {
     void loadContext();
@@ -1125,8 +1124,11 @@ export function App() {
     if (loading || postTarget.kind !== 'found') return;
 
     const frame = window.requestAnimationFrame(() => {
-      deepLinkRef.current?.scrollIntoView({ block: 'center' });
-      deepLinkRef.current?.focus({ preventScroll: true });
+      const target = deepLinkRef.current;
+      if (!target) return;
+      // Centre within the Boards document only; scrollIntoView could scroll Home's outer document.
+      scrollWithinApp(target, 'center');
+      target.focus({ preventScroll: true });
     });
     return () => window.cancelAnimationFrame(frame);
   }, [loading, postTarget.kind, postTarget.kind === 'found' ? postTarget.post.id : null]);

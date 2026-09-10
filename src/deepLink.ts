@@ -26,6 +26,9 @@ export type DiscussionAvailability = 'found' | 'loading' | 'not-found' | 'unavai
 
 const ROUTE_QUERY_KEYS = ['topic', 'thread', 'post', 'view', 'search'] as const;
 
+/** `view=developers` is canonical; the fleet's `reference` and `developer` aliases still resolve. */
+export const DEVELOPERS_VIEW_VALUES = ['developers', 'reference', 'developer'] as const;
+
 function resolveLocation(location?: LocationLike): LocationLike {
   if (location) return location;
   return typeof window === 'undefined' ? {} : window.location;
@@ -85,7 +88,9 @@ export function readRoute(search?: string): BoardsRoute {
   }
 
   if (topicId) return { kind: 'topic', topicId };
-  if (view === 'developers') return { kind: 'developers' };
+  if (view && (DEVELOPERS_VIEW_VALUES as readonly string[]).includes(view)) {
+    return { kind: 'developers' };
+  }
 
   return { kind: 'board', search: query.get('search')?.trim() ?? '' };
 }

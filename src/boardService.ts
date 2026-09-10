@@ -1,4 +1,5 @@
 import {
+  ATTACHMENT_IDENTIFIER_PREFIX,
   BOARD_FILE_NAME,
   BOARD_ROOT_NAME,
   BOARD_SCHEMA,
@@ -37,11 +38,19 @@ import type {
   SourceSelectionResult,
 } from './types';
 
-const MAX_RECORD_BYTES = 25_000;
-const MAX_PUBLISH_BYTES = 24_000;
+/** Readers fetch at most this many bytes per board.json record. */
+export const MAX_RECORD_BYTES = 25_000;
+/** App-side publish ceiling for an encoded board.json record. */
+export const MAX_PUBLISH_BYTES = 24_000;
 export const MAX_INLINE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
-const PAGE_SIZE = 100;
-const MAX_PAGES_PER_PREFIX = 30;
+/** Upper bound for a single confirmed-transaction lookup. */
+export const MAX_TRANSACTION_BYTES = 150_000;
+/** Discovery searches each identifier prefix newest-first in pages of this size… */
+export const PAGE_SIZE = 100;
+/** …and stops after this many pages per prefix. */
+export const MAX_PAGES_PER_PREFIX = 30;
+/** A tip receipt counts only when the confirmed PAYMENT amount matches within this tolerance. */
+export const TIP_AMOUNT_TOLERANCE = 0.00000001;
 
 const prefixes = [
   IDENTIFIERS.config,
@@ -196,7 +205,7 @@ async function fetchTransaction<T>(signature: string): Promise<T> {
   return responseData<T>(
     await qdnRequest({
       action: 'FETCH_NODE_API',
-      maxBytes: 150_000,
+      maxBytes: MAX_TRANSACTION_BYTES,
       path: `/transactions/signature/${encodeURIComponent(signature)}`,
     }),
   );
@@ -221,7 +230,7 @@ async function validateTipReceipt(payload: TipRecord, publisherAddress: string) 
     transaction.creatorAddress === publisherAddress &&
     transaction.recipient === payload.recipientAddress &&
     Number.isFinite(expectedAmount) &&
-    Math.abs((transaction.amount ?? Number.NaN) - expectedAmount) < 0.00000001
+    Math.abs((transaction.amount ?? Number.NaN) - expectedAmount) < TIP_AMOUNT_TOLERANCE
   );
 }
 
@@ -712,7 +721,7 @@ export async function selectAndPublishAttachmentWithResult(
   }
 
   const id = createBoardId();
-  const identifier = `qboards.v1.a.${id}`;
+  const identifier = `${ATTACHMENT_IDENTIFIER_PREFIX}${id}`;
   const publishResult = await qdnRequest<PublishActionResult>({
     action: 'PUBLISH_QDN_RESOURCE',
     identifier,
@@ -751,7 +760,7 @@ export async function publishAttachmentFileWithResult(
   }
 
   const id = createBoardId();
-  const identifier = `qboards.v1.a.${id}`;
+  const identifier = `${ATTACHMENT_IDENTIFIER_PREFIX}${id}`;
   const filename = file.name.trim() || 'attachment';
   const publishResult = await qdnRequest<PublishActionResult>({
     action: 'PUBLISH_QDN_RESOURCE',

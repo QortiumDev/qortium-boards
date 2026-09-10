@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildRouteLink,
+  DEVELOPERS_VIEW_VALUES,
   getAppBaseAddress,
   readRoute,
   resolveDiscussionAvailability,
@@ -24,6 +25,11 @@ describe('Boards deep links', () => {
     });
     expect(readRoute('?topic=topic-1')).toEqual({ kind: 'topic', topicId: 'topic-1' });
     expect(readRoute('?view=developers')).toEqual({ kind: 'developers' });
+    for (const alias of DEVELOPERS_VIEW_VALUES) {
+      expect(readRoute(`?view=${alias}`)).toEqual({ kind: 'developers' });
+      expect(readRoute(`?view=${alias.toUpperCase()}`)).toEqual({ kind: 'developers' });
+    }
+    expect(readRoute('?view=unknown')).toEqual({ kind: 'board', search: '' });
     expect(readRoute('?search=direct%20links')).toEqual({
       kind: 'board',
       search: 'direct links',

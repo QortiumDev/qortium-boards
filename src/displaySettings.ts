@@ -1,4 +1,4 @@
-export const ACCENT_VALUES = ['green', 'blue', 'orange', 'purple', 'red', 'teal', 'cyan', 'pink', 'yellow'] as const;
+export const ACCENT_VALUES = ['green', 'blue', 'orange', 'purple', 'red', 'teal', 'cyan', 'pink', 'yellow', 'clay'] as const;
 export const TEXT_SIZE_VALUES = ['extra-small', 'small', 'medium', 'large', 'extra-large', 'huge'] as const;
 export const UI_STYLE_VALUES = ['classic', 'modern', 'fun'] as const;
 
@@ -189,4 +189,19 @@ export function getDisplaySettingsUpdateFromMessage(
     default:
       return null;
   }
+}
+
+export type DisplaySettingsUpdater = (current: QdnDisplaySettings) => QdnDisplaySettings;
+
+/**
+ * Builds a `message` listener that folds Home display updates through a functional setter,
+ * so several partial updates arriving in one tick each build on the latest settings rather
+ * than a stale render closure. Unrecognized messages return the current object unchanged.
+ */
+export function createDisplaySettingsMessageListener(
+  update: (updater: DisplaySettingsUpdater) => void,
+): (event: { data: unknown }) => void {
+  return (event) => {
+    update((current) => getDisplaySettingsUpdateFromMessage(event.data, current) ?? current);
+  };
 }

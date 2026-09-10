@@ -93,6 +93,9 @@
 :root[data-theme='dark'][data-accent='cyan'] { --qb-accent: #88d2ff; --qb-accent-hover: #79c5f5; --qb-accent-text: #03243d; --qb-accent-soft: rgb(136 210 255 / 12%); --qb-accent-ring: rgb(136 210 255 / 20%); }
 :root[data-theme='dark'][data-accent='pink'] { --qb-accent: #f8a7cf; --qb-accent-hover: #f58cbf; --qb-accent-text: #2a0d23; --qb-accent-soft: rgb(248 167 207 / 12%); --qb-accent-ring: rgb(248 167 207 / 20%); }
 :root[data-theme='dark'][data-accent='yellow'] { --qb-accent: #f4cb67; --qb-accent-hover: #edbf53; --qb-accent-text: #2f2100; --qb-accent-soft: rgb(244 203 103 / 12%); --qb-accent-ring: rgb(244 203 103 / 20%); }
+/* Home's clay accent shares the same token pattern in both themes. */
+:root[data-accent='clay'] { --qb-accent: #b5652d; --qb-accent-hover: #9a5322; --qb-accent-text: #1e1400; --qb-accent-soft: rgb(181 101 45 / 10%); --qb-accent-ring: rgb(181 101 45 / 20%); }
+:root[data-theme='dark'][data-accent='clay'] { --qb-accent: #e3b48f; --qb-accent-hover: #d9a57b; --qb-accent-text: #2b1608; --qb-accent-soft: rgb(227 180 143 / 12%); --qb-accent-ring: rgb(227 180 143 / 20%); }
 
 :root[data-ui='modern'] {
   --qb-font: 'Inter', ui-sans-serif, system-ui, sans-serif;
@@ -282,6 +285,7 @@ textarea { resize: vertical; }
 .reference-hero p, .reference-section p, .reference-card p, .reference-callout p {
   max-width: 76ch; color: var(--qb-text-secondary);
 }
+.reference-hero .reference-note { color: var(--qb-muted); font-size: var(--qb-font-size-small); }
 .reference-hero > :last-child, .reference-section > :last-child,
 .reference-card > :last-child, .reference-callout > :last-child { margin-bottom: 0; }
 .reference-toc {
@@ -295,6 +299,8 @@ textarea { resize: vertical; }
 }
 .reference-toc a:hover { background: var(--qb-control-hover); color: var(--qb-text); }
 .reference-section { scroll-margin-top: 90px; }
+.reference-section:focus { outline: none; }
+.reference-section:focus-visible { outline: 3px solid var(--qb-accent-ring); outline-offset: 3px; }
 .reference-section > header, .reference-section > h2, .reference-section__heading { margin-bottom: 14px; }
 .reference-grid {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr)); gap: 12px; min-width: 0;
@@ -325,7 +331,11 @@ textarea { resize: vertical; }
   border-bottom: 1px solid var(--qb-border); background: var(--qb-control);
 }
 .reference-code > header strong { min-width: 0; }
-.reference-code > header .button { min-height: 34px; padding: 5px 10px; }
+.reference-code > header .button { min-height: 44px; padding: 5px 12px; }
+.reference-copy-status {
+  margin: 0; padding: 6px 10px; border-bottom: 1px solid var(--qb-border);
+  color: var(--qb-text-secondary); font-size: var(--qb-font-size-small); overflow-wrap: anywhere;
+}
 .reference-code pre {
   max-width: 100%; margin: 0; padding: 14px; overflow: auto;
   color: var(--qb-text); font-size: var(--qb-font-size-small); line-height: 1.55; tab-size: 2;

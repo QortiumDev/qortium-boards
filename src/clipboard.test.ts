@@ -46,6 +46,37 @@ describe('copyTextToClipboard', () => {
     expect(documentRef.body.removeChild).toHaveBeenCalledTimes(1);
   });
 
+  it('restores focus to the copy control after the textarea fallback without scrolling', async () => {
+    const control = { focus: vi.fn() };
+    const { documentRef, textarea } = mockDocument(true);
+    const dependencies: ClipboardDependencies = {
+      document: { ...documentRef, activeElement: control } as unknown as ClipboardDependencies['document'],
+      navigator: {},
+    };
+
+    await expect(copyTextToClipboard('fallback link', dependencies)).resolves.toBe(true);
+    expect(textarea.focus).toHaveBeenCalledTimes(1);
+    expect(documentRef.body.removeChild).toHaveBeenCalledTimes(1);
+    expect(control.focus).toHaveBeenCalledWith({ preventScroll: true });
+    expect(control.focus.mock.invocationCallOrder[0]).toBeGreaterThan(
+      documentRef.body.removeChild.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('restores focus even when the fallback copy command fails', async () => {
+    const control = { focus: vi.fn() };
+    const { documentRef } = mockDocument(false);
+    documentRef.execCommand = vi.fn(() => {
+      throw new Error('copy blocked');
+    });
+    const dependencies: ClipboardDependencies = {
+      document: { ...documentRef, activeElement: control } as unknown as ClipboardDependencies['document'],
+    };
+
+    await expect(copyTextToClipboard('blocked', dependencies)).resolves.toBe(false);
+    expect(control.focus).toHaveBeenCalledWith({ preventScroll: true });
+  });
+
   it('returns false when neither clipboard path is available', async () => {
     await expect(copyTextToClipboard('unavailable', {})).resolves.toBe(false);
   });

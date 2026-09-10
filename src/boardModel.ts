@@ -17,6 +17,10 @@ export const IDENTIFIERS = {
 } as const;
 
 export const REACTION_VALUES = ['like', 'insightful', 'agree', 'laugh', 'support'] as const;
+/** Attachments are ATTACHMENT-service resources, so their prefix sits outside the JSON record kinds. */
+export const ATTACHMENT_IDENTIFIER_PREFIX = 'qboards.v1.a.';
+/** QDN arbitrary-transaction identifiers are capped at 64 bytes; Boards identifiers are ASCII. */
+export const MAX_IDENTIFIER_BYTES = 64;
 export const MAX_ATTACHMENT_COUNT = 8;
 export type ReactionValue = (typeof REACTION_VALUES)[number];
 
@@ -418,8 +422,8 @@ export function buildIdentifier(kind: BoardRecord['kind'], id: string, targetId?
   if (kind === 'reaction') return `${IDENTIFIERS.reaction}${targetId ?? id}`;
   const prefix = IDENTIFIERS[kind];
   const identifier = `${prefix}${id}`;
-  if (identifier.length > 64) {
-    throw new Error('Board resource identifier exceeds the QDN 64-byte limit.');
+  if (identifier.length > MAX_IDENTIFIER_BYTES) {
+    throw new Error(`Board resource identifier exceeds the QDN ${MAX_IDENTIFIER_BYTES}-byte limit.`);
   }
   return identifier;
 }

@@ -47,7 +47,14 @@ values: 13px supporting text, 16px interface text, 21px section headings, and
 
 The in-app Developers workspace documents the public record schema, identifiers,
 authority rules, ordering, write limits, confirmation behavior, capabilities,
-and non-atomic native poll, attachment, and tip-receipt flows.
+and non-atomic native poll, attachment, and tip-receipt flows. It always renders
+in English and left-to-right, whatever language Home selects. Its size,
+pagination and tip-tolerance figures are bound to the exported implementation
+constants, and the test suite runs the published examples through the real
+record reader and publisher. Section links are full-document URLs (safe under
+Core's injected base URL) that scroll only the Boards document, never Home's
+outer shell, and each copy control reports its result in a visible status line.
+Home's `clay` accent is supported alongside the other accents.
 
 ## Direct links
 
@@ -56,6 +63,8 @@ Topics, threads, and individual replies have stable QDN links:
 - `qdn://APP/Boards/Boards?topic=<topicId>`
 - `qdn://APP/Boards/Boards?thread=<threadId>`
 - `qdn://APP/Boards/Boards?thread=<threadId>&post=<postId>`
+- `qdn://APP/Boards/Boards?view=developers` (the `reference` and `developer`
+  aliases resolve too and are rewritten to the canonical form on load)
 
 The app derives the QDN identity from Core's injected render globals, so links
 copied from a mirror keep that mirror's service, name, and identifier. A reply
@@ -66,8 +75,8 @@ the current URL fragment.
 
 ## Versioning
 
-Boards follows the Qortium app versioning standard (QAVS). Version `1.5.5`
-declares a minimum Qortium platform level of 1.5 and the sixth app release at
+Boards follows the Qortium app versioning standard (QAVS). Version `1.5.7`
+declares a minimum Qortium platform level of 1.5 and the eighth app release at
 that platform level. The build emits `dist/qortium-app.json`.
 
 ## Publishing
